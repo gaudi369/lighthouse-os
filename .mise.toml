@@ -121,9 +121,19 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${SSH_PORT} k
 # 6. Clean: Complete teardown of artifacts with safety guards
 # ------------------------------------------------------------------------------
 [tasks.clean]
-description = "Remove all build outputs, temporary disk images, and container layers"
+description = "Safely unmount desktop automounts, release loop devices, and wipe build outputs"
 run = """
 set -euo pipefail
+
+echo "==> Unmounting desktop automounts and osbuild temporary mounts..."
+sudo umount -Rf /run/media/${USER}/boot* 2>/dev/null || true
+sudo umount -Rf /run/osbuild* /store/tmp* 2>/dev/null || true
+
+echo "==> Detaching all active loop devices..."
+sudo losetup -D 2>/dev/null || true
+
+echo "==> Refreshing udisks2..."
+sudo systemctl restart udisks2.service 2>/dev/null || true
 
 echo "==> Validating build directory path..."
 if [ -n "${BUILD_DIR:-}" ] && [ "${BUILD_DIR}" != "/" ] && [ -d "${BUILD_DIR}" ]; then
@@ -133,11 +143,13 @@ else
   echo "==> Warning: BUILD_DIR is invalid, root, or does not exist. Skipping rm."
 fi
 
-echo "==> Removing local OCI image tag..."
+echo "==> Removing local OCI image tags (user & root)..."
 podman rmi -f "localhost/${IMAGE_NAME}:${IMAGE_TAG}" 2>/dev/null || true
+sudo podman rmi -f "localhost/${IMAGE_NAME}:${IMAGE_TAG}" 2>/dev/null || true
 
-echo "==> Pruning stopped builder containers..."
-podman container prune -f
+echo "==> Pruning stopped containers..."
+podman container prune -f >/dev/null 2>&1 || true
+sudo podman container prune -f >/dev/null 2>&1 || true
 
-echo "Clean complete. Host environment is pristine."
+echo "Clean complete. Host storage and loop devices are pristine."
 """
