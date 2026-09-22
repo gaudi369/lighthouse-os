@@ -1,0 +1,11 @@
+[[customizations.filesystem]]
+mountpoint = "/"
+fstype = "btrfs"
+minsize = 10737418240
+
+[[customizations.user]]
+name = "kid"
+description = "Kid Explorer"
+password = "$6$rounds=4096$t8N8ZfKj9sB$1Kk9hL9F0u5hLhB2X8r9M7.g5vOQ7K8lX8E6H5I3Y2W1J0K4M5N6O7P8Q9R0S1T2U3V4W5X6Y7Z8A9B0C1D2E3."
+home = "/var/home/kid"
+groups = ["wheel"]

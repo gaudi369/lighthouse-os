@@ -1,0 +1,143 @@
+[env]
+IMAGE_NAME   = "kid-os"
+IMAGE_TAG    = "dev"
+BUILD_DIR    = "{{config_root}}/build"
+DISK_IMAGE   = "{{config_root}}/build/qcow2/disk.qcow2"
+CONFIG_FILE  = "{{config_root}}/config.toml"
+SSH_PORT     = "2222"
+WEB_PORT     = "8080"
+
+# ------------------------------------------------------------------------------
+# 1. Build the OCI Container Image (Rootless - Fast & Reliable Network)
+# ------------------------------------------------------------------------------
+[tasks.build]
+description = "Build the immutable bootc layer using rootless podman"
+run = """
+echo "==> Building container layer (rootless): ${IMAGE_NAME}:${IMAGE_TAG}"
+podman build \
+  --layers \
+  -t localhost/${IMAGE_NAME}:${IMAGE_TAG} \
+  -f {{config_root}}/Containerfile \
+  {{config_root}}
+"""
+
+# ------------------------------------------------------------------------------
+# 2. Package into a bootable QEMU disk
+# ------------------------------------------------------------------------------
+[tasks.disk]
+description = "Convert OCI container into a QCOW2 virtual drive via bootc-image-builder"
+depends = ["build"]
+run = """
+mkdir -p "${BUILD_DIR}"
+
+echo "==> Transferring built image to root podman store..."
+podman save "localhost/${IMAGE_NAME}:${IMAGE_TAG}" | sudo podman load
+
+echo "==> Packaging container into QCOW2 disk..."
+sudo podman run \
+  --rm \
+  -it \
+  --privileged \
+  --pull=newer \
+  --security-opt label=type:unconfined_t \
+  -v "${CONFIG_FILE}:/config.toml:ro" \
+  -v "${BUILD_DIR}:/output" \
+  -v /var/lib/containers/storage:/var/lib/containers/storage \
+  quay.io/centos-bootc/bootc-image-builder:latest \
+  --type qcow2 \
+  --target-arch x86_64 \
+  --rootfs btrfs \
+  --config /config.toml \
+  localhost/${IMAGE_NAME}:${IMAGE_TAG}
+
+echo "==> Setting permissions on generated disk..."
+sudo chown -R "${USER}:${USER}" "${BUILD_DIR}"
+"""
+
+# ------------------------------------------------------------------------------
+# 3. Launch: Interactive VM with Surface hardware acceleration
+# ------------------------------------------------------------------------------
+[tasks.launch]
+description = "Boot the VM in a window with hardware OpenGL and host forwarding"
+run = """
+if [ ! -f "${DISK_IMAGE}" ]; then
+  echo "Disk image not found. Building first..."
+  mise run disk
+fi
+
+echo "==> Launching VM (KVM + Intel Iris OpenGL passthrough)..."
+qemu-system-x86_64 \
+  -enable-kvm \
+  -m 4G \
+  -smp 4 \
+  -cpu host \
+  -drive file="${DISK_IMAGE}",format=qcow2,if=virtio \
+  -device virtio-vga-gl \
+  -display sdl,gl=on \
+  -device virtio-tablet-pci \
+  -audiodev pa,id=snd0 \
+  -device intel-hda \
+  -device hda-duplex,audiodev=snd0 \
+  -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::${WEB_PORT}-:8080 \
+  -device virtio-net-pci,netdev=net0
+"""
+
+# ------------------------------------------------------------------------------
+# 4. Ephemeral Test Launch (Never modifies the underlying disk)
+# ------------------------------------------------------------------------------
+[tasks.sandbox]
+description = "Launch the VM with -snapshot (all disk modifications discarded on exit)"
+run = """
+if [ ! -f "${DISK_IMAGE}" ]; then
+  echo "Disk image not found. Run 'mise run disk' first."
+  exit 1
+fi
+
+echo "==> Launching sandbox VM (Zero disk state saved)..."
+qemu-system-x86_64 \
+  -enable-kvm \
+  -m 4G \
+  -smp 4 \
+  -cpu host \
+  -snapshot \
+  -drive file="${DISK_IMAGE}",format=qcow2,if=virtio \
+  -device virtio-vga-gl \
+  -display sdl,gl=on \
+  -device virtio-tablet-pci \
+  -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::${WEB_PORT}-:8080 \
+  -device virtio-net-pci,netdev=net0
+"""
+
+# ------------------------------------------------------------------------------
+# 5. Remote Access Helper for Testing Parent Controls
+# ------------------------------------------------------------------------------
+[tasks.ssh]
+description = "SSH into the running test VM via the forwarded localhost port"
+run = """
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${SSH_PORT} kid@localhost
+"""
+
+# ------------------------------------------------------------------------------
+# 6. Clean: Complete teardown of artifacts with safety guards
+# ------------------------------------------------------------------------------
+[tasks.clean]
+description = "Remove all build outputs, temporary disk images, and container layers"
+run = """
+set -euo pipefail
+
+echo "==> Validating build directory path..."
+if [ -n "${BUILD_DIR:-}" ] && [ "${BUILD_DIR}" != "/" ] && [ -d "${BUILD_DIR}" ]; then
+  echo "==> Removing build artifacts in ${BUILD_DIR}..."
+  sudo rm -rf "${BUILD_DIR}"
+else
+  echo "==> Warning: BUILD_DIR is invalid, root, or does not exist. Skipping rm."
+fi
+
+echo "==> Removing local OCI image tag..."
+podman rmi -f "localhost/${IMAGE_NAME}:${IMAGE_TAG}" 2>/dev/null || true
+
+echo "==> Pruning stopped builder containers..."
+podman container prune -f
+
+echo "Clean complete. Host environment is pristine."
+"""

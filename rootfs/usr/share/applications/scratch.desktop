@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Scratch
+Comment=Block-based programming for kids
+Exec=chromium --app=https://scratch.mit.edu/projects/editor/ --ozone-platform-hint=auto --class=scratch-app
+Icon=applications-development
+Terminal=false
+Type=Application
+Categories=Education;Development;

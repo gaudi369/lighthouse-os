@@ -1,0 +1,48 @@
+prefer-no-csd
+
+// Auto-start Noctalia shell bar and notifications
+spawn-at-startup "noctalia"
+
+input {
+    keyboard {
+        xkb {
+            layout "us"
+        }
+    }
+    touchpad {
+        tap
+        natural-scroll
+        accel-speed 0.2
+    }
+}
+
+layout {
+    gaps 16
+    center-focused-column "never"
+
+    default-column-width { proportion 0.8; }
+
+    focus-ring {
+        width 4
+        active-color "#89b4fa"
+        inactive-color "#313244"
+    }
+}
+
+binds {
+    // Basic navigation
+    Mod+Left  { focus-column-left; }
+    Mod+Right { focus-column-right; }
+    Mod+Q     { close-window; }
+
+    // Surface trackpad / mouse wheel column scrolling
+    Mod+WheelScrollDown cooldown-ms=150 { focus-column-right; }
+    Mod+WheelScrollUp   cooldown-ms=150 { focus-column-left; }
+
+    Mod+Return { spawn "foot"; } // default terminal
+
+    // Volume & media hotkeys
+    XF86AudioRaiseVolume { spawn "wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "5%+"; }
+    XF86AudioLowerVolume { spawn "wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "5%-"; }
+    XF86AudioMute        { spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SINK@" "toggle"; }
+}

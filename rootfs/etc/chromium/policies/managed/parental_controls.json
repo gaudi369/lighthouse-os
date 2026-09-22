@@ -1,0 +1,18 @@
+{
+  "URLBlocklist": [
+    "*"
+  ],
+  "URLAllowlist": [
+    "https://scratch.mit.edu/*",
+    "https://*.scratch.mit.edu/*",
+    "https://pbskids.org/*",
+    "https://*.pbskids.org/*",
+    "http://pbskids.org/*",
+    "http://*.pbskids.org/*"
+  ],
+  "DefaultSearchProviderEnabled": false,
+  "PasswordManagerEnabled": false,
+  "DeveloperToolsAvailability": 2,
+  "IncognitoModeAvailability": 1,
+  "BookmarkBarEnabled": false
+}

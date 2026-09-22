@@ -1,0 +1,38 @@
+# Build outputs & disk images
+build/
+*.qcow2
+*.raw
+*.img
+*.iso
+
+# QEMU runtime artifacts
+*.pid
+qemu.log
+qmp-sock
+serial.log
+
+# Podman / Container temporary artifacts
+*.tar
+container-storage/
+.container-build/
+
+# mise & local environment overrides
+.mise.local.toml
+.env
+.env.local
+*.local
+
+# Secrets & SSH keys (prevent leaking parent management keys)
+*.pem
+*.key
+id_ed25519*
+id_rsa*
+!*.pub
+
+# Editor & OS temporary files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
