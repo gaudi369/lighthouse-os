@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Choose a Theme
+Comment=Pick your favourite friend's colours and background
+Exec=lighthouse-themes
+Icon=preferences-desktop-appearance
+Terminal=false
+Type=Application
+Categories=Settings;DesktopSettings;
+StartupWMClass=org.lighthouse.Themes

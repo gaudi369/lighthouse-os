@@ -1,25 +1,33 @@
 #!/usr/bin/python3
-"""List or switch the Lighthouse theme.
+"""List, switch or lock the Lighthouse theme.
 
     lighthouse-theme list
     lighthouse-theme current
+    lighthouse-theme locked              prints yes or no
     sudo lighthouse-theme set <id>
+    sudo lighthouse-theme lock|unlock    stop or allow the kid changing it
 
 Themes live in /usr/share/lighthouse/themes/<id>/ (generated from themes/*.toml
 by scripts/gen-themes.py). Setting one copies its niri colours and palette into
 /etc/lighthouse/theme/ and its Noctalia colours and wallpaper into
-/etc/lighthouse/noctalia/theme.toml; niri and Noctalia pick the change up live,
-web apps on their next start.
+/etc/lighthouse/noctalia/theme.toml.
+
+The kid's theme picker runs `pkexec lighthouse-theme set <id>`, which polkit
+allows for the active local session without a password. Under pkexec only
+`set` is allowed, and only while the theme is unlocked.
 """
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 
-THEMES = Path("/usr/share/lighthouse/themes")
-CURRENT = Path("/etc/lighthouse/theme")
-NOCTALIA = Path("/etc/lighthouse/noctalia/theme.toml")
+ROOT = Path(os.environ.get("LIGHTHOUSE_ROOT", "/"))  # for tests
+THEMES = ROOT / "usr/share/lighthouse/themes"
+CURRENT = ROOT / "etc/lighthouse/theme"
+NOCTALIA = ROOT / "etc/lighthouse/noctalia/theme.toml"
+LOCK = ROOT / "etc/lighthouse/theme.lock"
 
 
 def themes():
@@ -35,9 +43,9 @@ def current():
 
 
 def set_theme(theme_id):
-    src = THEMES / theme_id
-    if not (src / "theme.json").is_file():
+    if theme_id not in themes():  # also rejects ids like "../x"
         sys.exit(f"lighthouse-theme: no theme '{theme_id}' (see: lighthouse-theme list)")
+    src = THEMES / theme_id
     CURRENT.mkdir(parents=True, exist_ok=True)
     # Palette first and niri last, so each program sees a complete theme when it reloads.
     for name in ("palette.json", "theme.json", "niri.kdl"):
@@ -47,21 +55,37 @@ def set_theme(theme_id):
 
 def main():
     args = sys.argv[1:]
-    if args == ["list"]:
-        active = current()
-        for theme_id, t in themes().items():
-            mark = "*" if theme_id == active else " "
-            print(f"{mark} {theme_id:<20} {t['mode']:<5}  {t['name']}: {t['description']}")
-    elif args == ["current"]:
-        print(current() or "none")
-    elif len(args) == 2 and args[0] == "set":
-        try:
+    from_kid = "PKEXEC_UID" in os.environ
+    command = args[0] if args else None
+
+    if from_kid and command != "set":
+        sys.exit("lighthouse-theme: only 'set' is allowed from the theme picker")
+    if from_kid and LOCK.exists():
+        sys.exit("lighthouse-theme: a grown-up has locked the theme")
+
+    try:
+        if args == ["list"]:
+            active = current()
+            for theme_id, t in themes().items():
+                mark = "*" if theme_id == active else " "
+                print(f"{mark} {theme_id:<20} {t['mode']:<5}  {t['name']}: {t['description']}")
+        elif args == ["current"]:
+            print(current() or "none")
+        elif args == ["locked"]:
+            print("yes" if LOCK.exists() else "no")
+        elif args == ["lock"]:
+            LOCK.touch()
+            print("Theme locked")
+        elif args == ["unlock"]:
+            LOCK.unlink(missing_ok=True)
+            print("Theme unlocked")
+        elif len(args) == 2 and command == "set":
             set_theme(args[1])
-        except PermissionError:
-            sys.exit("lighthouse-theme: permission denied (run with sudo)")
-        print(f"Theme set to {args[1]}")
-    else:
-        sys.exit(__doc__.strip())
+            print(f"Theme set to {args[1]}")
+        else:
+            sys.exit(__doc__.strip())
+    except PermissionError:
+        sys.exit("lighthouse-theme: permission denied (run with sudo)")
 
 
 if __name__ == "__main__":

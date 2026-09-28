@@ -56,8 +56,15 @@ palette, niri focus-ring colours and the SVG wallpaper into `rootfs/`.
 `mise run check` fails if a theme misses a contrast target or the generated
 files are out of date.
 
-On a running system, `sudo lighthouse-theme set <id>` switches the whole
-desktop (`lighthouse-theme list` shows them). In development,
+Kids pick their own theme with **Choose a Theme** in the launcher
+(`lighthouse-themes`): all eight scenes as big picture buttons. It runs
+`pkexec lighthouse-theme set <id>`, which polkit allows for the active local
+session without a password (`org.lighthouse.theme.policy`). Under pkexec,
+`lighthouse-theme` only allows `set`, and refuses it while locked.
+
+Parents, over SSH: `sudo lighthouse-theme set <id>` switches the theme,
+`sudo lighthouse-theme lock` / `unlock` stops or allows the kid changing it,
+and `lighthouse-theme list` shows them all. In development,
 `LIGHTHOUSE_THEME=<id> mise run dev` (or `shot`, `app`) previews a theme.
 
 ## Development

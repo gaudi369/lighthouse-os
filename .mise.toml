@@ -72,11 +72,13 @@ podman run --rm -v {{config_root}}/rootfs/usr/share/applications:/apps:ro \
   localhost/${IMAGE_NAME}:${IMAGE_TAG} sh -c 'desktop-file-validate /apps/*.desktop'
 echo "==> themes (contrast and generated files)"
 python3 {{config_root}}/scripts/gen-themes.py --check >/dev/null || python3 {{config_root}}/scripts/gen-themes.py --check
-echo "==> lighthouse-webapp tests"
+echo "==> lighthouse-webapp and lighthouse-theme tests"
 podman run --rm \
   -v {{config_root}}/rootfs/usr/bin/lighthouse-webapp:/usr/bin/lighthouse-webapp:ro \
+  -v {{config_root}}/rootfs/usr/bin/lighthouse-theme:/usr/bin/lighthouse-theme:ro \
+  -v {{config_root}}/rootfs/usr/share/lighthouse:/usr/share/lighthouse:ro \
   -v {{config_root}}/tests:/tests:ro \
-  localhost/${IMAGE_NAME}:${IMAGE_TAG} python3 -m unittest discover -s /tests
+  localhost/${IMAGE_NAME}:${IMAGE_TAG} python3 -m unittest discover -s /tests -v 2>&1 | grep -E "^test_|^Ran|^OK|^FAILED|Error|Traceback"
 echo "All checks passed."
 """
 

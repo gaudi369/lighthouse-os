@@ -7,8 +7,9 @@ rootfs_mounts=()
 for path in etc/niri etc/lighthouse etc/chromium/policies/managed; do
   rootfs_mounts+=(-v "${root}/rootfs/${path}:/${path}:ro")
 done
-rootfs_mounts+=(-v "${root}/rootfs/usr/bin/lighthouse-webapp:/usr/bin/lighthouse-webapp:ro")
-rootfs_mounts+=(-v "${root}/rootfs/usr/bin/lighthouse-theme:/usr/bin/lighthouse-theme:ro")
+for f in "${root}"/rootfs/usr/bin/lighthouse-*; do
+  rootfs_mounts+=(-v "${f}:/usr/bin/$(basename "$f"):ro")
+done
 rootfs_mounts+=(-v "${root}/rootfs/usr/share/lighthouse:/usr/share/lighthouse:ro")
 
 # LIGHTHOUSE_THEME=<id> previews a theme without changing the repo's default.

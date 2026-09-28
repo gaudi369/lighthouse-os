@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Lets the kid's theme picker run `pkexec lighthouse-theme set <id>` without a
+     password, for the active local session only. lighthouse-theme itself
+     refuses anything but `set`, and refuses that while a parent has locked it. -->
+<policyconfig>
+  <vendor>Lighthouse</vendor>
+  <action id="org.lighthouse.theme.set">
+    <description>Change the desktop theme</description>
+    <message>Changing the theme needs permission</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/lighthouse-theme</annotate>
+  </action>
+</policyconfig>
