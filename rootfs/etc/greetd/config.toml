@@ -10,4 +10,4 @@ user = "kid"
 # Shown only if the kid session exits.
 [default_session]
 command = "agreety --cmd niri-session"
-user = "greeter"
+user = "greetd"
