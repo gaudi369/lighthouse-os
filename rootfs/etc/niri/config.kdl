@@ -33,10 +33,9 @@ layout {
 
     default-column-width { proportion 0.8; }
 
+    // Colours come from the current theme (included at the end).
     focus-ring {
         width 4
-        active-color "#89b4fa"
-        inactive-color "#313244"
     }
 }
 
@@ -87,3 +86,6 @@ binds {
     XF86MonBrightnessUp   allow-when-locked=true { spawn-sh "noctalia msg brightness-up"; }
     XF86MonBrightnessDown allow-when-locked=true { spawn-sh "noctalia msg brightness-down"; }
 }
+
+// The current theme's colours, written by lighthouse-theme.
+include "/etc/lighthouse/theme/niri.kdl"

@@ -1,0 +1,68 @@
+#!/usr/bin/python3
+"""List or switch the Lighthouse theme.
+
+    lighthouse-theme list
+    lighthouse-theme current
+    sudo lighthouse-theme set <id>
+
+Themes live in /usr/share/lighthouse/themes/<id>/ (generated from themes/*.toml
+by scripts/gen-themes.py). Setting one copies its niri colours and palette into
+/etc/lighthouse/theme/ and its Noctalia colours and wallpaper into
+/etc/lighthouse/noctalia/theme.toml; niri and Noctalia pick the change up live,
+web apps on their next start.
+"""
+
+import json
+import shutil
+import sys
+from pathlib import Path
+
+THEMES = Path("/usr/share/lighthouse/themes")
+CURRENT = Path("/etc/lighthouse/theme")
+NOCTALIA = Path("/etc/lighthouse/noctalia/theme.toml")
+
+
+def themes():
+    return {p.name: json.loads((p / "theme.json").read_text())
+            for p in sorted(THEMES.iterdir()) if (p / "theme.json").is_file()}
+
+
+def current():
+    try:
+        return json.loads((CURRENT / "theme.json").read_text())["id"]
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def set_theme(theme_id):
+    src = THEMES / theme_id
+    if not (src / "theme.json").is_file():
+        sys.exit(f"lighthouse-theme: no theme '{theme_id}' (see: lighthouse-theme list)")
+    CURRENT.mkdir(parents=True, exist_ok=True)
+    # Palette first and niri last, so each program sees a complete theme when it reloads.
+    for name in ("palette.json", "theme.json", "niri.kdl"):
+        shutil.copy(src / name, CURRENT / name)
+    shutil.copy(src / "noctalia.toml", NOCTALIA)
+
+
+def main():
+    args = sys.argv[1:]
+    if args == ["list"]:
+        active = current()
+        for theme_id, t in themes().items():
+            mark = "*" if theme_id == active else " "
+            print(f"{mark} {theme_id:<20} {t['mode']:<5}  {t['name']}: {t['description']}")
+    elif args == ["current"]:
+        print(current() or "none")
+    elif len(args) == 2 and args[0] == "set":
+        try:
+            set_theme(args[1])
+        except PermissionError:
+            sys.exit("lighthouse-theme: permission denied (run with sudo)")
+        print(f"Theme set to {args[1]}")
+    else:
+        sys.exit(__doc__.strip())
+
+
+if __name__ == "__main__":
+    main()

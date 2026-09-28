@@ -15,6 +15,7 @@ Each app gets its own storage and its own Wayland app id.
 """
 
 import argparse
+import json
 import os
 import sys
 from urllib.parse import urlsplit
@@ -63,17 +64,38 @@ def run_chromium(app, url):
     ])
 
 
-TOOLBAR_CSS = b"""
+THEME = "/etc/lighthouse/theme/theme.json"
+
+TOOLBAR_CSS = """
 .lighthouse-toolbar { padding: 6px 10px; }
 .lighthouse-toolbar button { min-width: 44px; min-height: 36px; border-radius: 18px; }
 .lighthouse-toolbar .title { font-weight: bold; }
 """
 
+THEMED_CSS = """
+.lighthouse-toolbar {{ background: {surface_variant}; color: {on_surface_variant}; }}
+.lighthouse-toolbar button {{ background: {primary}; color: {on_primary}; }}
+.lighthouse-toolbar button:hover {{ background: {secondary}; color: {on_secondary}; }}
+.lighthouse-toolbar button:disabled {{ background: {surface}; color: {outline}; }}
+"""
+
+
+def theme_css():
+    """Toolbar CSS in the current Lighthouse theme's colours, if there is one."""
+    try:
+        with open(THEME) as f:
+            theme = json.load(f)
+    except (OSError, ValueError):
+        return TOOLBAR_CSS
+    Gtk.Settings.get_default().set_property(
+        "gtk-application-prefer-dark-theme", theme.get("mode") == "dark")
+    return TOOLBAR_CSS + THEMED_CSS.format(**theme["colors"])
+
 
 def build_toolbar(app, view, window):
     """Back, forward and home buttons, sized for small hands."""
     css = Gtk.CssProvider()
-    css.load_from_data(TOOLBAR_CSS, -1)
+    css.load_from_string(theme_css())
     Gtk.StyleContext.add_provider_for_display(
         window.get_display(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 

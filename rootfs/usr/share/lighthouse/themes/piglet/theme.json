@@ -1,0 +1,21 @@
+{
+  "id": "piglet",
+  "name": "Piglet",
+  "mode": "light",
+  "description": "A pink morning by Piglet's beech tree, with haycorns and violets.",
+  "colors": {
+    "surface": "#FFF6F8",
+    "on_surface": "#3A1F2B",
+    "surface_variant": "#FBE1EA",
+    "on_surface_variant": "#4D2738",
+    "primary": "#B8195A",
+    "on_primary": "#FFFFFF",
+    "secondary": "#256E5E",
+    "on_secondary": "#FFFFFF",
+    "tertiary": "#F7A8C4",
+    "on_tertiary": "#3A1F2B",
+    "outline": "#9A6A7E",
+    "error": "#B3261E",
+    "on_error": "#FFFFFF"
+  }
+}

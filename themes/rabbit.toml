@@ -1,0 +1,26 @@
+name = "Rabbit"
+mode = "light"
+description = "Rabbit's tidy garden, with rows of carrots and a picket fence."
+
+[colors]
+surface            = "#F6FAEF"
+on_surface         = "#1D2A15"
+surface_variant    = "#E2EED2"
+on_surface_variant = "#2B3B1F"
+primary            = "#33722A"
+on_primary         = "#FFFFFF"
+secondary          = "#A94400"
+on_secondary       = "#FFFFFF"
+tertiary           = "#F2CF55"
+on_tertiary        = "#1D2A15"
+outline            = "#71825E"
+error              = "#B3261E"
+on_error           = "#FFFFFF"
+
+[art]
+sky_top    = "#BFE6F5"
+sky_bottom = "#F3FAE8"
+hill_far   = "#9FCB6E"
+hill_near  = "#7A5234"
+accent     = "#F07A1A"
+detail     = "#4E9A37"

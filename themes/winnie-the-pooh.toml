@@ -1,0 +1,26 @@
+name = "Winnie-the-Pooh"
+mode = "dark"
+description = "Honey pots glowing on a warm evening."
+
+[colors]
+surface            = "#2A1D12"
+on_surface         = "#FFF3D9"
+surface_variant    = "#3D2A19"
+on_surface_variant = "#F6DFB0"
+primary            = "#F5B82E"
+on_primary         = "#2A1D12"
+secondary          = "#E8834A"
+on_secondary       = "#2A1D12"
+tertiary           = "#A9CF74"
+on_tertiary        = "#2A1D12"
+outline            = "#A08158"
+error              = "#FF8A80"
+on_error           = "#2A1D12"
+
+[art]
+sky_top    = "#2B1A2E"
+sky_bottom = "#6B3A2A"
+hill_far   = "#3E2A1A"
+hill_near  = "#2A1C10"
+accent     = "#F5B82E"
+detail     = "#FFE7A3"

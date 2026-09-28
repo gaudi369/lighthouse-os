@@ -1,0 +1,21 @@
+{
+  "id": "eeyore",
+  "name": "Eeyore",
+  "mode": "dark",
+  "description": "A soft, rainy dusk among the thistles, with a house of sticks.",
+  "colors": {
+    "surface": "#1E2230",
+    "on_surface": "#ECEEF8",
+    "surface_variant": "#2B3146",
+    "on_surface_variant": "#CDD4EA",
+    "primary": "#A3ADE0",
+    "on_primary": "#1E2230",
+    "secondary": "#F4A3C0",
+    "on_secondary": "#1E2230",
+    "tertiary": "#B8A2E0",
+    "on_tertiary": "#1E2230",
+    "outline": "#7880A3",
+    "error": "#FF8A80",
+    "on_error": "#1E2230"
+  }
+}

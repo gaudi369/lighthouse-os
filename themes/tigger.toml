@@ -1,0 +1,26 @@
+name = "Tigger"
+mode = "dark"
+description = "Bouncy orange stripes and bouncing trails under the stars."
+
+[colors]
+surface            = "#1C1A17"
+on_surface         = "#FFF2E2"
+surface_variant    = "#2C2721"
+on_surface_variant = "#FFD9B0"
+primary            = "#FF9124"
+on_primary         = "#1C1A17"
+secondary          = "#FFD54F"
+on_secondary       = "#1C1A17"
+tertiary           = "#5EC8F2"
+on_tertiary        = "#1C1A17"
+outline            = "#9A7650"
+error              = "#FF8A80"
+on_error           = "#1C1A17"
+
+[art]
+sky_top    = "#1C1A17"
+sky_bottom = "#3A2616"
+hill_far   = "#E9781A"
+hill_near  = "#1C1A17"
+accent     = "#FF9124"
+detail     = "#FFD54F"

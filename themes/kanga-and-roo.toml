@@ -1,0 +1,26 @@
+name = "Kanga and Roo"
+mode = "light"
+description = "A sandy meadow with big hops and little hops."
+
+[colors]
+surface            = "#FBF6EE"
+on_surface         = "#2E2418"
+surface_variant    = "#F0E3CE"
+on_surface_variant = "#3F3120"
+primary            = "#7A4F2A"
+on_primary         = "#FFFFFF"
+secondary          = "#1B6F80"
+on_secondary       = "#FFFFFF"
+tertiary           = "#EFAE4A"
+on_tertiary        = "#2E2418"
+outline            = "#8F7A5E"
+error              = "#B3261E"
+on_error           = "#FFFFFF"
+
+[art]
+sky_top    = "#A9DDE3"
+sky_bottom = "#FBF1DE"
+hill_far   = "#E7CE9C"
+hill_near  = "#C9A56B"
+accent     = "#7A4F2A"
+detail     = "#1B6F80"

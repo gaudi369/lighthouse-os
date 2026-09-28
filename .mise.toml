@@ -47,6 +47,11 @@ description = "Run the kid session headless, launch apps (args), and save a scre
 depends = ["devtools"]
 run = '{{config_root}}/scripts/shot.sh "$@"'
 
+[tasks.themes]
+description = "Screenshot every theme with a web app open, into build/shots/themes.png"
+depends = ["devtools"]
+run = '{{config_root}}/scripts/theme-gallery.sh "$@"'
+
 [tasks.test]
 description = "Browser integration tests: web app allowlist and Chromium policy, headless and offline"
 depends = ["devtools"]
@@ -58,13 +63,15 @@ description = "Validate configs without booting anything"
 run = """
 set -euo pipefail
 echo "==> niri config"
-podman run --rm -v {{config_root}}/rootfs/etc/niri:/etc/niri:ro \
+podman run --rm -v {{config_root}}/rootfs/etc/niri:/etc/niri:ro -v {{config_root}}/rootfs/etc/lighthouse:/etc/lighthouse:ro \
   localhost/${IMAGE_NAME}:${IMAGE_TAG} niri validate -c /etc/niri/config.kdl
 echo "==> chromium policy JSON"
 python3 -m json.tool {{config_root}}/rootfs/etc/chromium/policies/managed/parental_controls.json >/dev/null
 echo "==> desktop entries"
 podman run --rm -v {{config_root}}/rootfs/usr/share/applications:/apps:ro \
   localhost/${IMAGE_NAME}:${IMAGE_TAG} sh -c 'desktop-file-validate /apps/*.desktop'
+echo "==> themes (contrast and generated files)"
+python3 {{config_root}}/scripts/gen-themes.py --check >/dev/null || python3 {{config_root}}/scripts/gen-themes.py --check
 echo "==> lighthouse-webapp tests"
 podman run --rm \
   -v {{config_root}}/rootfs/usr/bin/lighthouse-webapp:/usr/bin/lighthouse-webapp:ro \

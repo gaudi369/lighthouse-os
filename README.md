@@ -32,6 +32,34 @@ Luanti). The Tux Paint and GCompris packages are placeholders.
 | Web apps | `lighthouse-webapp`, a WebKitGTK shell driven by per-site manifests (experimental), with Chromium `--app` plus managed policy as the fallback |
 | Accounts | `kid` has no password and no sudo; `admin` uses an SSH key only |
 
+## Themes
+
+Eight themes inspired by the Hundred Acre Wood of A. A. Milne's books (1926
+and 1928, now public domain in the US). The wallpapers are original scenes
+drawn from simple shapes; they don't use Disney's character designs.
+
+| Theme | Mode | Scene |
+|---|---|---|
+| Christopher Robin (default) | light | Sunny hills, an oak tree and a blue balloon |
+| Piglet | light | Beech tree with a round door, TRESPASSERS W, haycorns and violets |
+| Rabbit | light | Carrot rows behind a picket fence |
+| Kanga and Roo | light | Sandy meadow with big hops and little hops |
+| Winnie-the-Pooh | dark | HUNNY pots and a beehive on a warm evening |
+| Eeyore | dark | Rainy dusk, thistles, a house of sticks and a pink bow |
+| Tigger | dark | Bouncy stripes, stars and bouncing trails |
+| Owl | dark | Full moon, stars, and Owl on a branch by a lit window |
+
+Each theme is one file, `themes/<id>.toml`, with UI colours and wallpaper
+colours. `scripts/gen-themes.py` checks contrast (body text at least 7:1,
+other text 4.5:1, focus ring and borders 3:1), then generates the Noctalia
+palette, niri focus-ring colours and the SVG wallpaper into `rootfs/`.
+`mise run check` fails if a theme misses a contrast target or the generated
+files are out of date.
+
+On a running system, `sudo lighthouse-theme set <id>` switches the whole
+desktop (`lighthouse-theme list` shows them). In development,
+`LIGHTHOUSE_THEME=<id> mise run dev` (or `shot`, `app`) previews a theme.
+
 ## Development
 
 Most work doesn't need a VM. Pick the fastest loop that covers your change:
@@ -43,6 +71,7 @@ Most work doesn't need a VM. Pick the fastest loop that covers your change:
 | `mise run dev` | Run the kid session in a window on your desktop, using this repo's `rootfs/` config | Shell, keybindings, theme, apps |
 | `mise run app -- pbskids` | Open one app in a normal window to click around; blocked navigations print in the terminal. Also `pbskids@<url>`, `chromium [url]` (kid policy, with an address bar), or any desktop entry like `tuxpaint` | Exploring what a site needs |
 | `mise run test` | Browser tests: web app allowlist (navigation, redirects, frames, lookalike domains, downloads) and the Chromium policy, headless and offline | Web app or policy changes |
+| `mise run themes` | Screenshot every theme with a web app open, into `build/shots/themes.png` | Theme changes |
 | `mise run shot` | Run the kid session headless and save a screenshot | Checking the result without a window |
 | `mise run disk` | Build a bootable qcow2 (needs sudo) | Boot, login, services |
 | `mise run launch` / `sandbox` | Boot the VM (`sandbox` discards changes) | Same |

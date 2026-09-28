@@ -1,0 +1,26 @@
+name = "Owl"
+mode = "dark"
+description = "A wise midnight: a full moon, stars, and a glowing window in a great tree."
+
+[colors]
+surface            = "#101B2D"
+on_surface         = "#EAF0FA"
+surface_variant    = "#1C2B44"
+on_surface_variant = "#C8D6EC"
+primary            = "#F2C14E"
+on_primary         = "#101B2D"
+secondary          = "#9CCB9C"
+on_secondary       = "#101B2D"
+tertiary           = "#D2A679"
+on_tertiary        = "#101B2D"
+outline            = "#62789A"
+error              = "#FF8A80"
+on_error           = "#101B2D"
+
+[art]
+sky_top    = "#0A1322"
+sky_bottom = "#23385C"
+hill_far   = "#16243B"
+hill_near  = "#0C1524"
+accent     = "#F2C14E"
+detail     = "#FFF3C4"

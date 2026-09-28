@@ -1,0 +1,26 @@
+name = "Christopher Robin"
+mode = "light"
+description = "A sunny day in the Hundred Acre Wood, with a blue balloon."
+
+[colors]
+surface            = "#F7F9F4"
+on_surface         = "#1C2733"
+surface_variant    = "#E2EBF3"
+on_surface_variant = "#27384A"
+primary            = "#2A64A8"
+on_primary         = "#FFFFFF"
+secondary          = "#2C7340"
+on_secondary       = "#FFFFFF"
+tertiary           = "#F2B705"
+on_tertiary        = "#1C2733"
+outline            = "#6F7F8F"
+error              = "#B3261E"
+on_error           = "#FFFFFF"
+
+[art]
+sky_top    = "#8EC5F2"
+sky_bottom = "#DDF0FB"
+hill_far   = "#9CCB7A"
+hill_near  = "#5FA35A"
+accent     = "#2F7FD8"
+detail     = "#FFD23F"
