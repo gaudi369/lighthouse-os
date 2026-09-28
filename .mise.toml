@@ -28,14 +28,25 @@ podman build \
 description = "Run the kid session nested in a window on the host (config edits need only a restart)"
 run = "{{config_root}}/scripts/dev-session.sh"
 
-[tasks.shot]
-description = "Run the kid session headless, launch apps (args), and save a screenshot to build/shots/"
+[tasks.devtools]
+description = "Build the dev-only image layer (headless sway, grim) used by shot and test"
+hide = true
 run = """
 podman build -q -t localhost/${IMAGE_NAME}:${IMAGE_TAG}-devtools \
   --build-arg BASE=localhost/${IMAGE_NAME}:${IMAGE_TAG} \
   -f {{config_root}}/Containerfile.dev {{config_root}} >/dev/null
-{{config_root}}/scripts/shot.sh "$@"
 """
+
+[tasks.shot]
+description = "Run the kid session headless, launch apps (args), and save a screenshot to build/shots/"
+depends = ["devtools"]
+run = '{{config_root}}/scripts/shot.sh "$@"'
+
+[tasks.test]
+description = "Browser integration tests: web app allowlist and Chromium policy, headless and offline"
+depends = ["devtools"]
+run = '{{config_root}}/scripts/test.sh "$@"'
+
 
 [tasks.check]
 description = "Validate configs without booting anything"

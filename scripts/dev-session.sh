@@ -6,7 +6,7 @@
 # a restart of this script; package changes need `mise run build`.
 set -euo pipefail
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+source "$(dirname "$0")/rootfs-mounts.sh"
 image="localhost/${IMAGE_NAME:-kid-os}:${IMAGE_TAG:-dev}"
 
 : "${WAYLAND_DISPLAY:?dev-session must be run from a Wayland session}"
@@ -17,15 +17,7 @@ state="${root}/build/dev-session"
 rm -rf "${state}"
 mkdir -p -m 0700 "${state}/home" "${state}/run"
 
-mounts=()
-for path in etc/niri etc/lighthouse etc/chromium/policies/managed; do
-  mounts+=(-v "${root}/rootfs/${path}:/${path}:ro")
-done
-# Desktop entries are mounted file-by-file so the image's own entries stay visible.
-mounts+=(-v "${root}/rootfs/usr/bin/lighthouse-webapp:/usr/bin/lighthouse-webapp:ro")
-for f in "${root}"/rootfs/usr/share/applications/*.desktop; do
-  mounts+=(-v "${f}:/usr/share/applications/$(basename "$f"):ro")
-done
+mounts=("${rootfs_mounts[@]}")
 
 exec podman run --rm $([ -t 0 ] && echo -it) \
   --userns=keep-id \

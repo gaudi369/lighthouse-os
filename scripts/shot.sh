@@ -8,20 +8,13 @@
 # Env: SHOT_WAIT (seconds to let apps load, default 15), SHOT_SIZE (default 1366x768)
 set -euo pipefail
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+source "$(dirname "$0")/rootfs-mounts.sh"
 image="localhost/${IMAGE_NAME:-kid-os}:${IMAGE_TAG:-dev}-devtools"
 out="${root}/build/shots"
 mkdir -p "${out}"
 name="$(date +%Y%m%d-%H%M%S)${1:+-${1%%@*}}.png"
 
-mounts=()
-for path in etc/niri etc/lighthouse etc/chromium/policies/managed; do
-  mounts+=(-v "${root}/rootfs/${path}:/${path}:ro")
-done
-mounts+=(-v "${root}/rootfs/usr/bin/lighthouse-webapp:/usr/bin/lighthouse-webapp:ro")
-for f in "${root}"/rootfs/usr/share/applications/*.desktop; do
-  mounts+=(-v "${f}:/usr/share/applications/$(basename "$f"):ro")
-done
+mounts=("${rootfs_mounts[@]}")
 [ -e /dev/dri ] && mounts+=(--device /dev/dri)
 
 podman run --rm \

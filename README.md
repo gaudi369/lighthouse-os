@@ -41,6 +41,7 @@ Most work doesn't need a VM. Pick the fastest loop that covers your change:
 | `mise run build` | Build the container image | Package changes |
 | `mise run check` | Validate niri config, Chromium policy and desktop entries | Every change |
 | `mise run dev` | Run the kid session in a window on your desktop, using this repo's `rootfs/` config | Shell, keybindings, theme, apps |
+| `mise run test` | Browser tests: web app allowlist (navigation, redirects, frames, lookalike domains, downloads) and the Chromium policy, headless and offline | Web app or policy changes |
 | `mise run shot` | Run the kid session headless and save a screenshot | Checking the result without a window |
 | `mise run disk` | Build a bootable qcow2 (needs sudo) | Boot, login, services |
 | `mise run launch` / `sandbox` | Boot the VM (`sandbox` discards changes) | Same |
