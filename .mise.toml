@@ -3,7 +3,8 @@ IMAGE_NAME   = "kid-os"
 IMAGE_TAG    = "dev"
 BUILD_DIR    = "{{config_root}}/build"
 DISK_IMAGE   = "{{config_root}}/build/qcow2/disk.qcow2"
-CONFIG_FILE  = "{{config_root}}/config.toml"
+CONFIG_FILE  = "{{config_root}}/build/config.toml"
+SSH_KEY      = "{{config_root}}/build/ssh/lighthouse_dev"
 SSH_PORT     = "2222"
 WEB_PORT     = "8080"
 
@@ -22,13 +23,41 @@ podman build \
 """
 
 # ------------------------------------------------------------------------------
+# Fast loops: no VM required
+# ------------------------------------------------------------------------------
+[tasks.dev]
+description = "Run the kid session nested in a window on the host (config edits need only a restart)"
+run = "{{config_root}}/scripts/dev-session.sh"
+
+[tasks.check]
+description = "Validate configs without booting anything"
+run = """
+set -euo pipefail
+echo "==> niri config"
+podman run --rm -v {{config_root}}/rootfs/etc/niri:/etc/niri:ro \
+  localhost/${IMAGE_NAME}:${IMAGE_TAG} niri validate -c /etc/niri/config.kdl
+echo "==> chromium policy JSON"
+python3 -m json.tool {{config_root}}/rootfs/etc/chromium/policies/managed/parental_controls.json >/dev/null
+echo "==> desktop entries"
+podman run --rm -v {{config_root}}/rootfs/usr/share/applications:/apps:ro \
+  localhost/${IMAGE_NAME}:${IMAGE_TAG} sh -c 'desktop-file-validate /apps/*.desktop'
+echo "All checks passed."
+"""
+
+# ------------------------------------------------------------------------------
 # 2. Package into a bootable QEMU disk
 # ------------------------------------------------------------------------------
 [tasks.disk]
 description = "Convert OCI container into a QCOW2 virtual drive via bootc-image-builder"
 depends = ["build"]
 run = """
-mkdir -p "${BUILD_DIR}"
+mkdir -p "${BUILD_DIR}/ssh"
+
+if [ ! -f "${SSH_KEY}" ]; then
+  echo "==> Generating dev SSH key for the admin account..."
+  ssh-keygen -q -t ed25519 -N "" -C "lighthouse-dev" -f "${SSH_KEY}"
+fi
+sed "s|@ADMIN_SSH_KEY@|$(cat "${SSH_KEY}.pub")|" {{config_root}}/config.toml.in > "${CONFIG_FILE}"
 
 echo "==> Transferring built image to root podman store..."
 podman save "localhost/${IMAGE_NAME}:${IMAGE_TAG}" | sudo podman load
@@ -114,7 +143,7 @@ qemu-system-x86_64 \
 [tasks.ssh]
 description = "SSH into the running test VM via the forwarded localhost port"
 run = """
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${SSH_PORT} kid@localhost
+ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${SSH_PORT} admin@localhost
 """
 
 # ------------------------------------------------------------------------------

@@ -1,6 +1,13 @@
 [terminal]
 vt = 1
 
-[default_session]
-command = "bash -l -c 'export XDG_SESSION_TYPE=wayland && exec niri'"
+# Autologin: runs once at boot under the full "greetd" PAM stack, which
+# includes pam_systemd, so niri-session gets a proper systemd user session.
+[initial_session]
+command = "niri-session"
 user = "kid"
+
+# Shown only if the kid session exits.
+[default_session]
+command = "agreety --cmd niri-session"
+user = "greeter"

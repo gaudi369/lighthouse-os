@@ -1,0 +1,78 @@
+// System-wide niri config. niri reads ~/.config/niri/config.kdl first,
+// then falls back to this file, so the kid account must not have its own.
+
+prefer-no-csd
+
+hotkey-overlay {
+    skip-at-startup
+}
+
+environment {
+    NOCTALIA_CONFIG_HOME "/etc/lighthouse"
+}
+
+spawn-at-startup "noctalia"
+
+input {
+    keyboard {
+        xkb {
+            layout "us"
+        }
+    }
+    touchpad {
+        tap
+        natural-scroll
+        accel-speed 0.2
+    }
+}
+
+layout {
+    gaps 16
+    center-focused-column "never"
+
+    default-column-width { proportion 0.8; }
+
+    focus-ring {
+        width 4
+        active-color "#89b4fa"
+        inactive-color "#313244"
+    }
+}
+
+window-rule {
+    geometry-corner-radius 20
+    clip-to-geometry true
+}
+
+window-rule {
+    match app-id="dev.noctalia.Noctalia"
+    open-floating true
+}
+
+layer-rule {
+    match namespace="^noctalia-backdrop"
+    place-within-backdrop true
+}
+
+debug {
+    honor-xdg-activation-with-invalid-serial
+}
+
+binds {
+    // Launcher
+    Mod+Space { spawn-sh "noctalia msg panel-toggle launcher"; }
+
+    // Scroll the strip of windows
+    Mod+Left  { focus-column-left; }
+    Mod+Right { focus-column-right; }
+    Mod+WheelScrollDown cooldown-ms=150 { focus-column-right; }
+    Mod+WheelScrollUp   cooldown-ms=150 { focus-column-left; }
+    Mod+Q     { close-window; }
+
+    // Volume & brightness keys
+    XF86AudioRaiseVolume  allow-when-locked=true { spawn-sh "noctalia msg volume-up"; }
+    XF86AudioLowerVolume  allow-when-locked=true { spawn-sh "noctalia msg volume-down"; }
+    XF86AudioMute         allow-when-locked=true { spawn-sh "noctalia msg volume-mute"; }
+    XF86MonBrightnessUp   allow-when-locked=true { spawn-sh "noctalia msg brightness-up"; }
+    XF86MonBrightnessDown allow-when-locked=true { spawn-sh "noctalia msg brightness-down"; }
+}

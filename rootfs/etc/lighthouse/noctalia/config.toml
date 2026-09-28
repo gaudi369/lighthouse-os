@@ -1,0 +1,13 @@
+# Loaded via NOCTALIA_CONFIG_HOME=/etc/lighthouse (set in /etc/niri/config.kdl),
+# so the kid's session uses this system-owned config.
+[theme]
+mode    = "dark"
+source  = "builtin"
+builtin = "Catppuccin"
+
+[bar.default]
+position  = "top"
+thickness = 48
+start     = ["launcher"]
+center    = ["clock"]
+end       = ["volume", "battery"]

@@ -1,0 +1,17 @@
+[[customizations.filesystem]]
+mountpoint = "/"
+fstype = "btrfs"
+minsize = 10737418240
+
+# The child's account: autologin only, no password, no admin rights.
+[[customizations.user]]
+name = "kid"
+description = "Kid Explorer"
+home = "/var/home/kid"
+
+# The parent/maintainer account: SSH key only. The key is filled in by `mise run disk`.
+[[customizations.user]]
+name = "admin"
+description = "Lighthouse Admin"
+key = "@ADMIN_SSH_KEY@"
+groups = ["wheel"]

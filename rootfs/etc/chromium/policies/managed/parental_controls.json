@@ -1,18 +1,19 @@
 {
-  "URLBlocklist": [
-    "*"
-  ],
+  "URLBlocklist": ["*"],
   "URLAllowlist": [
-    "https://scratch.mit.edu/*",
-    "https://*.scratch.mit.edu/*",
-    "https://pbskids.org/*",
-    "https://*.pbskids.org/*",
-    "http://pbskids.org/*",
-    "http://*.pbskids.org/*"
+    "scratch.mit.edu",
+    "pbskids.org",
+    "pbs.org"
   ],
   "DefaultSearchProviderEnabled": false,
   "PasswordManagerEnabled": false,
   "DeveloperToolsAvailability": 2,
   "IncognitoModeAvailability": 1,
-  "BookmarkBarEnabled": false
+  "BrowserGuestModeEnabled": false,
+  "BrowserAddPersonEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "BookmarkBarEnabled": false,
+  "DownloadRestrictions": 3,
+  "ExtensionInstallBlocklist": ["*"]
 }
