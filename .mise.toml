@@ -29,6 +29,15 @@ podman build \
 description = "Run the kid session nested in a window on the host (config edits need only a restart)"
 run = "{{config_root}}/scripts/dev-session.sh"
 
+[tasks.shot]
+description = "Run the kid session headless, launch apps (args), and save a screenshot to build/shots/"
+run = """
+podman build -q -t localhost/${IMAGE_NAME}:${IMAGE_TAG}-devtools \
+  --build-arg BASE=localhost/${IMAGE_NAME}:${IMAGE_TAG} \
+  -f {{config_root}}/Containerfile.dev {{config_root}} >/dev/null
+{{config_root}}/scripts/shot.sh "$@"
+"""
+
 [tasks.check]
 description = "Validate configs without booting anything"
 run = """

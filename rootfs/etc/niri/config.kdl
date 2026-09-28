@@ -9,6 +9,7 @@ hotkey-overlay {
 
 environment {
     NOCTALIA_CONFIG_HOME "/etc/lighthouse"
+    XDG_SESSION_TYPE "wayland"
 }
 
 spawn-at-startup "noctalia"

@@ -11,3 +11,13 @@ thickness = 48
 start     = ["launcher"]
 center    = ["clock"]
 end       = ["volume", "battery"]
+
+[shell]
+# The kid should land straight on the desktop: no setup wizard, no phoning home.
+setup_wizard_enabled = false
+telemetry_enabled    = false
+
+[storage]
+# The kid account has no password, so there is no keyring to unlock at login.
+key_source = "file"
+key_file   = "~/.local/state/noctalia/storage.key"

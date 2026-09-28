@@ -1,0 +1,9 @@
+# Dev-only layer on top of the kid image: a headless compositor to host niri
+# and a screenshot tool. Never shipped.
+ARG BASE=localhost/kid-os:dev
+FROM ${BASE}
+
+RUN dnf5 -y install sway grim && dnf5 clean all && \
+    setcap -r /usr/bin/sway && \
+    useradd -m -u 1000 kid && \
+    install -d -m 0700 -o kid -g kid /run/kid
