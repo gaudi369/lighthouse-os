@@ -26,7 +26,12 @@ podman build \
 # ------------------------------------------------------------------------------
 [tasks.dev]
 description = "Run the kid session nested in a window on the host (config edits need only a restart)"
-run = "{{config_root}}/scripts/dev-session.sh"
+run = "{{config_root}}/scripts/run-on-host.sh niri"
+
+[tasks.app]
+description = "Open one kid app (e.g. pbskids, pbskids@<url>, chromium [url]) in a window on your desktop"
+run = '{{config_root}}/scripts/app.sh "$@"'
+
 
 [tasks.devtools]
 description = "Build the dev-only image layer (headless sway, grim) used by shot and test"
