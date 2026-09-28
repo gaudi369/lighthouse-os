@@ -50,6 +50,12 @@ window-rule {
     open-floating true
 }
 
+// Fixed-size apps (like Tux Paint) would otherwise auto-float above the strip.
+window-rule {
+    match app-id="^TuxPaint"
+    open-floating false
+}
+
 layer-rule {
     match namespace="^noctalia-backdrop"
     place-within-backdrop true
@@ -60,15 +66,19 @@ debug {
 }
 
 binds {
+    // Help: shows the bindings that have a hotkey-overlay-title
+    Mod+Slash       hotkey-overlay-title="Show these shortcuts" { show-hotkey-overlay; }
+    Mod+Shift+Slash hotkey-overlay-title=null { show-hotkey-overlay; }
+
     // Launcher
-    Mod+Space { spawn-sh "noctalia msg panel-toggle launcher"; }
+    Mod+Space hotkey-overlay-title="Open an app" { spawn-sh "noctalia msg panel-toggle launcher"; }
 
     // Scroll the strip of windows
-    Mod+Left  { focus-column-left; }
-    Mod+Right { focus-column-right; }
+    Mod+Left  hotkey-overlay-title="Go to the app on the left"  { focus-column-left; }
+    Mod+Right hotkey-overlay-title="Go to the app on the right" { focus-column-right; }
     Mod+WheelScrollDown cooldown-ms=150 { focus-column-right; }
     Mod+WheelScrollUp   cooldown-ms=150 { focus-column-left; }
-    Mod+Q     { close-window; }
+    Mod+Q     hotkey-overlay-title="Close this app" { close-window; }
 
     // Volume & brightness keys
     XF86AudioRaiseVolume  allow-when-locked=true { spawn-sh "noctalia msg volume-up"; }

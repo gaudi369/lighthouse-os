@@ -63,6 +63,63 @@ def run_chromium(app, url):
     ])
 
 
+TOOLBAR_CSS = b"""
+.lighthouse-toolbar { padding: 6px 10px; }
+.lighthouse-toolbar button { min-width: 44px; min-height: 36px; border-radius: 18px; }
+.lighthouse-toolbar .title { font-weight: bold; }
+"""
+
+
+def build_toolbar(app, view, window):
+    """Back, forward and home buttons, sized for small hands."""
+    css = Gtk.CssProvider()
+    css.load_from_data(TOOLBAR_CSS, -1)
+    Gtk.StyleContext.add_provider_for_display(
+        window.get_display(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def button(icon, tooltip, action):
+        b = Gtk.Button.new_from_icon_name(icon)
+        b.set_tooltip_text(tooltip)
+        b.connect("clicked", lambda _b: action())
+        return b
+
+    back = button("go-previous-symbolic", "Back", view.go_back)
+    forward = button("go-next-symbolic", "Forward", view.go_forward)
+    home = button("go-home-symbolic", "Home", lambda: view.load_uri(app.url))
+
+    def update(*_):
+        back.set_sensitive(view.can_go_back())
+        forward.set_sensitive(view.can_go_forward())
+
+    view.connect("load-changed", update)
+    view.connect("notify::uri", update)
+    update()
+
+    start = Gtk.Box(spacing=6)
+    for b in (back, forward, home):
+        start.append(b)
+    title = Gtk.Label(label=app.name, css_classes=["title"])
+
+    bar = Gtk.CenterBox(css_classes=["toolbar", "lighthouse-toolbar"])
+    bar.set_start_widget(start)
+    bar.set_center_widget(title)
+
+    # Keyboard and mouse-button equivalents
+    keys = Gtk.ShortcutController(scope=Gtk.ShortcutScope.GLOBAL)
+    for accel, action in (("<Alt>Left", view.go_back), ("<Alt>Right", view.go_forward),
+                          ("<Alt>Home", lambda: view.load_uri(app.url))):
+        keys.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string(accel),
+            Gtk.CallbackAction.new(lambda *_a, act=action: (act(), True)[1])))
+    window.add_controller(keys)
+
+    mouse = Gtk.GestureClick(button=0, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+    mouse.connect("pressed", lambda g, *_: {8: view.go_back, 9: view.go_forward}
+                  .get(g.get_current_button(), lambda: None)())
+    window.add_controller(mouse)
+    return bar
+
+
 def run_webkit(app, url):
     gtk_app = Gtk.Application(application_id=f"org.lighthouse.webapp.{app.id.replace('-', '_')}")
 
@@ -105,10 +162,15 @@ def run_webkit(app, url):
         view.connect("decide-policy", on_decide_policy)
         view.connect("context-menu", lambda *_: True)
         view.connect("permission-request", lambda _v, req: (req.deny(), True)[1])
+        settings.set_enable_back_forward_navigation_gestures(True)
 
         window = Gtk.ApplicationWindow(application=gtk_app, title=app.name)
         window.set_default_size(1280, 800)
-        window.set_child(view)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(build_toolbar(app, view, window))
+        view.set_vexpand(True)
+        box.append(view)
+        window.set_child(box)
         view.bind_property("title", window, "title")
         window.present()
         view.load_uri(url)

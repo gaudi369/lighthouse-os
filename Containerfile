@@ -37,7 +37,10 @@ RUN for app in chromium-browser dev.noctalia.Noctalia; do \
       desktop-file-edit --set-key=NoDisplay --set-value=true /usr/share/applications/${app}.desktop; \
     done
 
-# 5. Enable systemd services
+# 5. App defaults: Tux Paint fills the screen at native resolution
+RUN printf '\n# Lighthouse\nfullscreen=yes\nnative=yes\n' >> /etc/tuxpaint/tuxpaint.conf
+
+# 6. Enable systemd services
 RUN systemctl enable greetd.service && \
     systemctl enable sshd.service && \
     bootc container lint
