@@ -167,8 +167,10 @@ Most work doesn't need a VM. Pick the fastest loop that covers your change:
 | `mise run test` | Browser tests, headless and offline: allowlist (navigation, redirects, frames, lookalike domains, file URLs, downloads), the ask page, a parent approving through the real service, and the Chromium policy. Saves `build/shots/ask-a-grown-up.png` | Web app, parent or policy changes |
 | `mise run shot -- <app>` | Run the kid session headless, open apps, save a screenshot and logs to `build/shots/` | Checking the result without a window |
 | `mise run themes` | Screenshot every theme into `build/shots/themes.png` | Theme changes |
-| `mise run disk` | Build a bootable qcow2 (needs sudo) | Boot, login, services |
-| `mise run launch` / `sandbox` | Boot the VM (`sandbox` discards changes) | Same |
+| `mise run disk` | Build a bootable qcow2 (needs sudo, ~7 min) | Once, or when accounts or partitions change |
+| `mise run launch` / `sandbox` | Boot the VM (`sandbox` discards changes, including updates) | Boot, login, services |
+| `mise run vm-update` | Build, push to a local registry (`lighthouse-registry` on 127.0.0.1:5000) and `bootc upgrade` the running VM onto it; reboots it. The first run switches the VM to the registry and downloads every layer; later runs only changed layers | Testing a new image in the VM |
+| `mise run vm-sync` | Copy `rootfs/` into the running VM over SSH in seconds; `-- --session` restarts the kid session. `/usr` changes last until the VM reboots; the VM's theme choice is kept | Quick config checks in the VM |
 | `mise run ssh` | SSH into the VM as `admin` | Debugging the VM |
 | `mise run iso` | Build the unattended laptop installer (needs sudo) | Installing on real hardware |
 | `mise run iso-test` | Install from the ISO onto an empty disk in a UEFI VM, then boot it | Testing the installer |
@@ -177,6 +179,21 @@ Most work doesn't need a VM. Pick the fastest loop that covers your change:
 tools on the built image, so edits there only need a restart; package
 changes need `mise run build`. `LIGHTHOUSE_THEME=<id>` previews a theme in
 any of them. `IMAGE_TAG=<tag>` builds or uses a different image tag.
+
+### Which task to use
+
+| You changed… | Check it with |
+|---|---|
+| Anything | `mise run check` first (seconds) |
+| A web app, its allowlist, or `lighthouse-webapp` | `mise run app -- <id>` to click around, then `mise run test` |
+| The ask flow or the parent page | `mise run parent` + `mise run app -- <id>`, then `mise run check` and `mise run test` |
+| A theme | `LIGHTHOUSE_THEME=<id> mise run app -- pbskids`, then `mise run themes` |
+| niri config, shortcuts, the bar or launcher | `mise run dev` (Mod is Alt there), or `mise run shot` without a window |
+| Packages in the `Containerfile` | `mise run build`, then any of the above |
+| Services, polkit, greetd, boot-time behaviour | `mise run vm-sync` for a quick try, then `mise run vm-update` |
+| Anything before calling it done | `mise run vm-update` and a look in the VM |
+| Accounts, disk layout, `config.toml.in` | `mise run disk` (the only time a full disk build is needed) |
+| The installer | `mise run iso` + `mise run iso-test` |
 
 **The installer ISO erases every disk in the machine it boots on, without
 asking.** Write it to a USB stick (`build/iso/bootiso/install.iso`) only for
@@ -195,8 +212,10 @@ a laptop you intend to wipe. It installs `kid` (autologin) and `admin`
 
 Known issues and open questions:
 
-- The disk build prints `blueprint validation failed ... customizations.filesystem`;
-  the disk still builds, but the 10 GiB root size is probably ignored.
+- The disk build used to print `blueprint validation failed ...
+  customizations.filesystem` (an `fstype` key the builder doesn't accept);
+  `config.toml.in` now sets only a 24 GiB root, so `vm-update` has room for
+  two deployments. Not yet confirmed with a disk build.
 - While `bootc-image-builder` runs, its loop-device partitions show up in
   file managers (udisks). A udev rule on the build host
   (`ENV{UDISKS_IGNORE}="1"` for loop devices) would hide them; `mise run clean`

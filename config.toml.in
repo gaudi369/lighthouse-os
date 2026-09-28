@@ -1,7 +1,8 @@
+# Room for two bootc deployments, so mise run vm-update can stage upgrades.
+# (The filesystem type comes from --rootfs btrfs.)
 [[customizations.filesystem]]
 mountpoint = "/"
-fstype = "btrfs"
-minsize = 10737418240
+minsize = "24 GiB"
 
 # The child's account: autologin only, no password, no admin rights.
 [[customizations.user]]

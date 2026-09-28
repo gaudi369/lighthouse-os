@@ -115,6 +115,15 @@ echo "Installer: ${BUILD_DIR}/iso/bootiso/install.iso"
 description = "Install from the ISO onto an empty disk in a UEFI VM, then boot it"
 run = "{{config_root}}/scripts/iso-test.sh"
 
+[tasks.vm-update]
+description = "Update the running VM to a fresh build via a local registry and bootc upgrade (reboots it)"
+depends = ["build"]
+run = "{{config_root}}/scripts/vm.sh update"
+
+[tasks.vm-sync]
+description = "Copy rootfs/ into the running VM over SSH (seconds; /usr changes last until reboot). -- --session restarts the kid session"
+run = '{{config_root}}/scripts/vm.sh sync "$@"'
+
 # ------------------------------------------------------------------------------
 # 3. Launch: Interactive VM with Surface hardware acceleration
 # ------------------------------------------------------------------------------
