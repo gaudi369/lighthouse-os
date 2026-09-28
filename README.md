@@ -29,7 +29,7 @@ Luanti). The Tux Paint and GCompris packages are placeholders.
 | Session | greetd autologins `kid` into `niri-session` |
 | Compositor | niri, config in `rootfs/etc/niri/config.kdl` |
 | Shell | Noctalia v5, config in `rootfs/etc/lighthouse/noctalia/` (via `NOCTALIA_CONFIG_HOME`) |
-| Web apps | `lighthouse-webapp`, a WebKitGTK shell driven by per-site manifests (experimental), with Chromium `--app` plus managed policy as the fallback |
+| Web apps | `lighthouse-webapp`, a small Blink (Chromium) shell via QtWebEngine, driven by per-site desktop entries; Chromium `--app` plus managed policy as the fallback |
 | Accounts | `kid` has no password and no sudo; `admin` uses an SSH key only |
 
 ## Themes
@@ -97,13 +97,15 @@ changes need `mise run build` first.
 ## Status
 
 - Working in `mise run dev` and `mise run shot`: niri, the Noctalia bar, and the PBS Kids and Scratch web apps.
-- Web apps run on `lighthouse-webapp` (WebKitGTK). Each app is one desktop
-  entry with `X-Lighthouse-Url`, `X-Lighthouse-Allow`, and optionally
+- Web apps run on `lighthouse-webapp`, using Chromium's Blink engine through
+  QtWebEngine (PySide6). Each app is one desktop entry with
+  `X-Lighthouse-Url`, `X-Lighthouse-Allow`, and optionally
   `X-Lighthouse-Engine=chromium` or `X-Lighthouse-UserAgent`. Blocked
-  navigations are logged to stderr, so running an app with `mise run shot`
-  shows which domains it needs.
-- Known WebKit costs so far: PBS Kids needs a desktop Chrome user agent to
-  avoid its mobile "download our app" banner.
+  navigations are logged to stderr, so `mise run app` shows which domains a
+  site needs. (An earlier WebKitGTK version rendered PBS Kids badly.)
+- Apps open full width; Mod+R toggles half width for two side by side.
+- In a VM, `lighthouse-hardware.service` turns off niri's hardware cursor
+  plane, which QEMU's virtual GPU draws with artefacts.
 - The VM boots into the kid session with autologin; `admin` SSH works.
 - Laptop hardware support: Wi-Fi (NetworkManager-wifi, Intel/Realtek/
   MediaTek/Atheros/Broadcom firmware), Intel SOF audio, power profiles

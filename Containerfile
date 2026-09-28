@@ -22,11 +22,11 @@ RUN dnf5 -y --setopt=timeout=60 install \
     dbus-daemon \
     && dnf5 clean all
 
-# 2. Runtime for lighthouse-webapp (web sites as apps)
+# 2. Runtimes: lighthouse-webapp (Blink via QtWebEngine) and the GTK theme picker
 RUN dnf5 -y --setopt=timeout=60 install \
+    python3-pyside6 \
     python3-gobject \
     gtk4 \
-    webkitgtk6.0 \
     && dnf5 clean all
 
 # 3. Laptop hardware: Wi-Fi, audio firmware, power profiles, backlight
@@ -54,4 +54,5 @@ RUN printf '\n# Lighthouse\nfullscreen=yes\nnative=yes\n' >> /etc/tuxpaint/tuxpa
 RUN systemctl enable greetd.service && \
     systemctl enable sshd.service && \
     systemctl enable tuned.service tuned-ppd.service && \
+    systemctl enable lighthouse-hardware.service && \
     bootc container lint

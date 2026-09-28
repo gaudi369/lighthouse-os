@@ -1,0 +1,10 @@
+[Unit]
+Description=Lighthouse hardware-specific session settings
+Before=greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/lighthouse-hardware
+
+[Install]
+WantedBy=multi-user.target

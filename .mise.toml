@@ -64,6 +64,7 @@ run = """
 set -euo pipefail
 echo "==> niri config"
 podman run --rm -v {{config_root}}/rootfs/etc/niri:/etc/niri:ro -v {{config_root}}/rootfs/etc/lighthouse:/etc/lighthouse:ro \
+  -v {{config_root}}/rootfs/usr/share/lighthouse/niri-hardware.kdl:/run/lighthouse/niri-hardware.kdl:ro \
   localhost/${IMAGE_NAME}:${IMAGE_TAG} niri validate -c /etc/niri/config.kdl
 echo "==> chromium policy JSON"
 python3 -m json.tool {{config_root}}/rootfs/etc/chromium/policies/managed/parental_controls.json >/dev/null

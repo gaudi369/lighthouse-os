@@ -31,7 +31,12 @@ layout {
     gaps 16
     center-focused-column "never"
 
-    default-column-width { proportion 0.8; }
+    // Each app fills the screen; Mod+R toggles half width for side by side.
+    default-column-width { proportion 1.0; }
+    preset-column-widths {
+        proportion 0.5
+        proportion 1.0
+    }
 
     // Colours come from the current theme (included at the end).
     focus-ring {
@@ -60,10 +65,6 @@ layer-rule {
     place-within-backdrop true
 }
 
-debug {
-    honor-xdg-activation-with-invalid-serial
-}
-
 binds {
     // Help: shows the bindings that have a hotkey-overlay-title
     Mod+Slash       hotkey-overlay-title="Show these shortcuts" { show-hotkey-overlay; }
@@ -77,6 +78,7 @@ binds {
     Mod+Right hotkey-overlay-title="Go to the app on the right" { focus-column-right; }
     Mod+WheelScrollDown cooldown-ms=150 { focus-column-right; }
     Mod+WheelScrollUp   cooldown-ms=150 { focus-column-left; }
+    Mod+R     hotkey-overlay-title="Make this app half or full width" { switch-preset-column-width; }
     Mod+Q     hotkey-overlay-title="Close this app" { close-window; }
 
     // Volume & brightness keys
@@ -86,6 +88,9 @@ binds {
     XF86MonBrightnessUp   allow-when-locked=true { spawn-sh "noctalia msg brightness-up"; }
     XF86MonBrightnessDown allow-when-locked=true { spawn-sh "noctalia msg brightness-down"; }
 }
+
+// Hardware-specific debug flags, written at boot by lighthouse-hardware.service.
+include "/run/lighthouse/niri-hardware.kdl"
 
 // The current theme's colours, written by lighthouse-theme.
 include "/etc/lighthouse/theme/niri.kdl"

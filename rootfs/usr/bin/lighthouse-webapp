@@ -6,44 +6,55 @@ Each app is a desktop entry in /usr/share/applications/<id>.desktop with:
     Exec=lighthouse-webapp <id>
     X-Lighthouse-Url=https://pbskids.org/
     X-Lighthouse-Allow=pbskids.org;pbs.org;
-    X-Lighthouse-Engine=webkit            (optional: webkit | chromium)
-    X-Lighthouse-UserAgent=...            (optional: for sites that sniff WebKit)
+    X-Lighthouse-Engine=blink             (optional: blink | chromium)
+    X-Lighthouse-UserAgent=...            (optional: for sites that sniff the browser)
 
-With the webkit engine every navigation (pages, frames, pop-ups) must stay
-inside the app's allowlist; anything else is blocked and logged to stderr.
-Each app gets its own storage and its own Wayland app id.
+The blink engine (Chromium's renderer, via QtWebEngine) makes every navigation
+(pages, frames, redirects, pop-ups) stay inside the app's allowlist; anything
+else is blocked and logged to stderr. Each app gets its own storage and its own
+Wayland app id. The chromium engine runs Chromium itself, where only the global
+managed policy applies.
 """
 
 import argparse
+import configparser
 import json
 import os
+import re
 import sys
+from pathlib import Path
 from urllib.parse import urlsplit
 
-import gi
+DATA_HOME = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+CACHE_HOME = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+THEME = "/etc/lighthouse/theme/theme.json"
+ICONS = Path("/usr/share/icons/Adwaita/symbolic/actions")
 
-gi.require_version("Gtk", "4.0")
-gi.require_version("WebKit", "6.0")
-from gi.repository import GLib, Gtk, WebKit  # noqa: E402
 
-try:
-    gi.require_version("GioUnix", "2.0")
-    from gi.repository.GioUnix import DesktopAppInfo
-except (ImportError, ValueError):
-    from gi.repository.Gio import DesktopAppInfo
+def find_desktop_entry(app_id):
+    dirs = [DATA_HOME] + [Path(d) for d in
+                          (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")]
+    for d in dirs:
+        path = d / "applications" / f"{app_id}.desktop"
+        if path.is_file():
+            parser = configparser.ConfigParser(interpolation=None, strict=False)
+            parser.optionxform = str  # keys are case-sensitive
+            parser.read(path)
+            return parser["Desktop Entry"]
+    return None
 
 
 class App:
     def __init__(self, app_id):
-        info = DesktopAppInfo.new(f"{app_id}.desktop")
-        if info is None:
+        entry = find_desktop_entry(app_id)
+        if entry is None:
             sys.exit(f"lighthouse-webapp: no desktop entry for '{app_id}'")
         self.id = app_id
-        self.name = info.get_name()
-        self.url = info.get_string("X-Lighthouse-Url")
-        self.allow = [d for d in (info.get_string("X-Lighthouse-Allow") or "").split(";") if d]
-        self.engine = info.get_string("X-Lighthouse-Engine") or "webkit"
-        self.user_agent = info.get_string("X-Lighthouse-UserAgent")
+        self.name = entry.get("Name", app_id)
+        self.url = entry.get("X-Lighthouse-Url")
+        self.allow = [d for d in entry.get("X-Lighthouse-Allow", "").split(";") if d]
+        self.engine = entry.get("X-Lighthouse-Engine", "blink")
+        self.user_agent = entry.get("X-Lighthouse-UserAgent")
         if not self.url or not self.allow:
             sys.exit(f"lighthouse-webapp: '{app_id}' needs X-Lighthouse-Url and X-Lighthouse-Allow")
 
@@ -57,148 +68,155 @@ class App:
         return any(host == d or host.endswith("." + d) for d in self.allow)
 
 
+def blocked(app, what):
+    print(f"lighthouse-webapp[{app.id}]: blocked {what}", file=sys.stderr, flush=True)
+
+
 def run_chromium(app, url):
-    data_dir = os.path.join(GLib.get_user_data_dir(), "lighthouse", "chromium", app.id)
+    data_dir = DATA_HOME / "lighthouse" / "chromium" / app.id
     os.execvp("chromium-browser", [
         "chromium-browser", "--no-first-run", f"--user-data-dir={data_dir}", f"--app={url}",
     ])
 
 
-THEME = "/etc/lighthouse/theme/theme.json"
-
-TOOLBAR_CSS = """
-.lighthouse-toolbar { padding: 6px 10px; }
-.lighthouse-toolbar button { min-width: 44px; min-height: 36px; border-radius: 18px; }
-.lighthouse-toolbar .title { font-weight: bold; }
-"""
-
-THEMED_CSS = """
-.lighthouse-toolbar {{ background: {surface_variant}; color: {on_surface_variant}; }}
-.lighthouse-toolbar button {{ background: {primary}; color: {on_primary}; }}
-.lighthouse-toolbar button:hover {{ background: {secondary}; color: {on_secondary}; }}
-.lighthouse-toolbar button:disabled {{ background: {surface}; color: {outline}; }}
-"""
-
-
-def theme_css():
-    """Toolbar CSS in the current Lighthouse theme's colours, if there is one."""
+def load_theme():
     try:
         with open(THEME) as f:
-            theme = json.load(f)
+            return json.load(f)
     except (OSError, ValueError):
-        return TOOLBAR_CSS
-    Gtk.Settings.get_default().set_property(
-        "gtk-application-prefer-dark-theme", theme.get("mode") == "dark")
-    return TOOLBAR_CSS + THEMED_CSS.format(**theme["colors"])
+        return None
 
 
-def build_toolbar(app, view, window):
-    """Back, forward and home buttons, sized for small hands."""
-    css = Gtk.CssProvider()
-    css.load_from_string(theme_css())
-    Gtk.StyleContext.add_provider_for_display(
-        window.get_display(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-
-    def button(icon, tooltip, action):
-        b = Gtk.Button.new_from_icon_name(icon)
-        b.set_tooltip_text(tooltip)
-        b.connect("clicked", lambda _b: action())
-        return b
-
-    back = button("go-previous-symbolic", "Back", view.go_back)
-    forward = button("go-next-symbolic", "Forward", view.go_forward)
-    home = button("go-home-symbolic", "Home", lambda: view.load_uri(app.url))
-
-    def update(*_):
-        back.set_sensitive(view.can_go_back())
-        forward.set_sensitive(view.can_go_forward())
-
-    view.connect("load-changed", update)
-    view.connect("notify::uri", update)
-    update()
-
-    start = Gtk.Box(spacing=6)
-    for b in (back, forward, home):
-        start.append(b)
-    title = Gtk.Label(label=app.name, css_classes=["title"])
-
-    bar = Gtk.CenterBox(css_classes=["toolbar", "lighthouse-toolbar"])
-    bar.set_start_widget(start)
-    bar.set_center_widget(title)
-
-    # Keyboard and mouse-button equivalents
-    keys = Gtk.ShortcutController(scope=Gtk.ShortcutScope.GLOBAL)
-    for accel, action in (("<Alt>Left", view.go_back), ("<Alt>Right", view.go_forward),
-                          ("<Alt>Home", lambda: view.load_uri(app.url))):
-        keys.add_shortcut(Gtk.Shortcut.new(
-            Gtk.ShortcutTrigger.parse_string(accel),
-            Gtk.CallbackAction.new(lambda *_a, act=action: (act(), True)[1])))
-    window.add_controller(keys)
-
-    mouse = Gtk.GestureClick(button=0, propagation_phase=Gtk.PropagationPhase.CAPTURE)
-    mouse.connect("pressed", lambda g, *_: {8: view.go_back, 9: view.go_forward}
-                  .get(g.get_current_button(), lambda: None)())
-    window.add_controller(mouse)
-    return bar
+TOOLBAR_QSS = """
+QToolBar {{ background: {surface_variant}; border: none; padding: 6px 10px; spacing: 8px; }}
+QToolBar QLabel {{ color: {on_surface_variant}; font-weight: bold; font-size: 15px; }}
+QToolButton {{ background: {primary}; color: {on_primary}; border: none; border-radius: 18px;
+              min-width: 44px; min-height: 36px; }}
+QToolButton:hover {{ background: {secondary}; color: {on_secondary}; }}
+QToolButton:disabled {{ background: {surface}; color: {outline}; }}
+"""
 
 
-def run_webkit(app, url):
-    gtk_app = Gtk.Application(application_id=f"org.lighthouse.webapp.{app.id.replace('-', '_')}")
+def run_blink(app, url):
+    # QtWebEngine reads these at startup: no remote DevTools, ever.
+    os.environ.pop("QTWEBENGINE_REMOTE_DEBUGGING", None)
 
-    def blocked(uri):
-        print(f"lighthouse-webapp[{app.id}]: blocked {uri}", file=sys.stderr, flush=True)
+    from PySide6.QtCore import QSize, Qt, QUrl
+    from PySide6.QtGui import QIcon, QKeySequence, QPixmap, QShortcut
+    from PySide6.QtWebEngineCore import (QWebEnginePage, QWebEngineProfile, QWebEngineSettings,
+                                         QWebEngineUrlRequestInterceptor, QWebEngineUrlRequestInfo)
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+    from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QSizePolicy, QToolBar, QWidget
 
-    def on_decide_policy(view, decision, kind):
-        if kind == WebKit.PolicyDecisionType.RESPONSE:
-            return False
-        uri = decision.get_navigation_action().get_request().get_uri()
-        if not app.allows(uri):
-            blocked(uri)
-            decision.ignore()
+    qt_app = QApplication([sys.argv[0]])
+    qt_app.setApplicationName(app.name)
+    qt_app.setDesktopFileName(f"org.lighthouse.webapp.{app.id.replace('-', '_')}")  # Wayland app id
+
+    theme = load_theme()
+    if theme and hasattr(qt_app.styleHints(), "setColorScheme"):
+        qt_app.styleHints().setColorScheme(
+            Qt.ColorScheme.Dark if theme.get("mode") == "dark" else Qt.ColorScheme.Light)
+
+    class FrameGuard(QWebEngineUrlRequestInterceptor):
+        """Second line of defence: block page and frame loads the allowlist doesn't cover."""
+        FRAMES = (QWebEngineUrlRequestInfo.ResourceType.ResourceTypeMainFrame,
+                  QWebEngineUrlRequestInfo.ResourceType.ResourceTypeSubFrame)
+
+        def interceptRequest(self, info):
+            uri = info.requestUrl().toString()
+            if info.resourceType() in self.FRAMES and not app.allows(uri):
+                blocked(app, uri)
+                info.block(True)
+
+    class Page(QWebEnginePage):
+        def acceptNavigationRequest(self, qurl, nav_type, is_main_frame):
+            uri = qurl.toString()
+            if not app.allows(uri):
+                blocked(app, uri)
+                return False
             return True
-        if kind == WebKit.PolicyDecisionType.NEW_WINDOW_ACTION:
-            # One window per app: pop-ups open in place.
-            decision.ignore()
-            view.load_uri(uri)
-            return True
-        return False
 
-    def on_download(session, download):
-        blocked(f"download {download.get_request().get_uri()}")
-        download.cancel()
+        def createWindow(self, _type):
+            # One window per app: pop-ups and target=_blank links open in place
+            # (acceptNavigationRequest still applies to them).
+            return self
 
-    def on_activate(gtk_app):
-        base = os.path.join("lighthouse", "webkit", app.id)
-        session = WebKit.NetworkSession.new(
-            os.path.join(GLib.get_user_data_dir(), base),
-            os.path.join(GLib.get_user_cache_dir(), base),
-        )
-        session.connect("download-started", on_download)
+        def javaScriptConsoleMessage(self, *args):
+            pass
 
-        view = WebKit.WebView(network_session=session)
-        settings = view.get_settings()
-        settings.set_enable_developer_extras(False)
-        settings.set_javascript_can_open_windows_automatically(False)
-        if app.user_agent:
-            settings.set_user_agent(app.user_agent)
-        view.connect("decide-policy", on_decide_policy)
-        view.connect("context-menu", lambda *_: True)
-        view.connect("permission-request", lambda _v, req: (req.deny(), True)[1])
-        settings.set_enable_back_forward_navigation_gestures(True)
+    storage = f"lighthouse/blink/{app.id}"
+    profile = QWebEngineProfile(app.id)
+    profile.setPersistentStoragePath(str(DATA_HOME / storage))
+    profile.setCachePath(str(CACHE_HOME / storage))
+    if app.user_agent:
+        profile.setHttpUserAgent(app.user_agent)
+    guard = FrameGuard()
+    profile.setUrlRequestInterceptor(guard)
+    profile.downloadRequested.connect(
+        lambda d: (blocked(app, f"download {d.url().toString()}"), d.cancel()))
 
-        window = Gtk.ApplicationWindow(application=gtk_app, title=app.name)
-        window.set_default_size(1280, 800)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.append(build_toolbar(app, view, window))
-        view.set_vexpand(True)
-        box.append(view)
-        window.set_child(box)
-        view.bind_property("title", window, "title")
-        window.present()
-        view.load_uri(url)
+    page = Page(profile)
+    settings = page.settings()
+    settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)
+    settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, False)
+    if hasattr(page, "permissionRequested"):  # Qt >= 6.8
+        page.permissionRequested.connect(lambda permission: permission.deny())
 
-    gtk_app.connect("activate", on_activate)
-    return gtk_app.run([sys.argv[0]])
+    view = QWebEngineView()
+    view.setPage(page)
+    view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+
+    window = QMainWindow()
+    window.setWindowTitle(app.name)
+    window.resize(1280, 800)
+    window.setCentralWidget(view)
+    view.titleChanged.connect(lambda title: window.setWindowTitle(title or app.name))
+
+    def icon(name):
+        """An Adwaita symbolic icon, recoloured to the theme's on-primary colour."""
+        try:
+            svg = (ICONS / f"{name}-symbolic.svg").read_text()
+        except OSError:
+            return QIcon()
+        colour = theme["colors"]["on_primary"] if theme else "#FFFFFF"
+        svg = re.sub(r'fill="#[0-9a-fA-F]{3,8}"', f'fill="{colour}"', svg)
+        svg = re.sub(r"fill:#[0-9a-fA-F]{3,8}", f"fill:{colour}", svg)
+        pixmap = QPixmap()
+        pixmap.loadFromData(svg.encode(), "SVG")
+        return QIcon(pixmap)
+
+    # Back, forward and home, sized for small hands.
+    toolbar = QToolBar(movable=False, floatable=False)
+    toolbar.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
+    toolbar.setIconSize(QSize(22, 22))
+    back = toolbar.addAction(icon("go-previous"), "Back", view.back)
+    forward = toolbar.addAction(icon("go-next"), "Forward", view.forward)
+    toolbar.addAction(icon("go-home"), "Home", lambda: view.load(QUrl(app.url)))
+    left, right = QWidget(), QWidget()
+    for spacer in (left, right):
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    toolbar.addWidget(left)
+    toolbar.addWidget(QLabel(app.name))
+    toolbar.addWidget(right)
+    window.addToolBar(toolbar)
+    if theme:
+        toolbar.setStyleSheet(TOOLBAR_QSS.format(**theme["colors"]))
+
+    def update_buttons(*_):
+        history = view.history()
+        back.setEnabled(history.canGoBack())
+        forward.setEnabled(history.canGoForward())
+    view.urlChanged.connect(update_buttons)
+    view.loadFinished.connect(update_buttons)
+    update_buttons()
+
+    for keys, action in (("Alt+Left", view.back), ("Alt+Right", view.forward),
+                         ("Alt+Home", lambda: view.load(QUrl(app.url)))):
+        QShortcut(QKeySequence(keys), window, activated=action)
+
+    view.load(QUrl(url))
+    window.show()
+    return qt_app.exec()
 
 
 def main():
@@ -214,7 +232,7 @@ def main():
 
     if app.engine == "chromium":
         run_chromium(app, url)
-    return run_webkit(app, url)
+    return run_blink(app, url)
 
 
 if __name__ == "__main__":

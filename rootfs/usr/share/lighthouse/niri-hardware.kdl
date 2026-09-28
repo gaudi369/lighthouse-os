@@ -1,0 +1,4 @@
+// Generated at boot by lighthouse-hardware
+debug {
+    honor-xdg-activation-with-invalid-serial
+}

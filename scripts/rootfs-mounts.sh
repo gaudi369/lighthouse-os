@@ -11,6 +11,8 @@ for f in "${root}"/rootfs/usr/bin/lighthouse-*; do
   rootfs_mounts+=(-v "${f}:/usr/bin/$(basename "$f"):ro")
 done
 rootfs_mounts+=(-v "${root}/rootfs/usr/share/lighthouse:/usr/share/lighthouse:ro")
+# Stands in for the file lighthouse-hardware.service writes at boot.
+rootfs_mounts+=(-v "${root}/rootfs/usr/share/lighthouse/niri-hardware.kdl:/run/lighthouse/niri-hardware.kdl:ro")
 
 # LIGHTHOUSE_THEME=<id> previews a theme without changing the repo's default.
 if [ -n "${LIGHTHOUSE_THEME:-}" ]; then

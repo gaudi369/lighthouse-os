@@ -1,0 +1,16 @@
+#!/bin/sh
+# Write niri's hardware-specific debug flags to /run before the session starts.
+# /usr/share/lighthouse/niri-hardware.kdl is the same output on real hardware
+# (dev containers mount it in place of this file).
+set -eu
+mkdir -p /run/lighthouse
+{
+  echo "// Generated at boot by lighthouse-hardware"
+  echo "debug {"
+  echo "    honor-xdg-activation-with-invalid-serial"
+  if systemd-detect-virt --vm --quiet; then
+    # Virtual GPUs (QEMU virtio-gpu) draw hardware cursor planes with artefacts.
+    echo "    disable-cursor-plane"
+  fi
+  echo "}"
+} > /run/lighthouse/niri-hardware.kdl
