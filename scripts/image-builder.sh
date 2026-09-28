@@ -13,6 +13,13 @@ type="$1" template="$2" out="$3"
 image="localhost/${IMAGE_NAME:-kid-os}:${IMAGE_TAG:-dev}"
 key="${SSH_KEY:?SSH_KEY must be set}"
 
+# Ask for the sudo password once, and keep it fresh for the whole build (the
+# builder alone takes longer than sudo's default 5-minute timeout).
+sudo -v
+while sleep 60; do sudo -n true 2>/dev/null || exit; done &
+keepalive=$!
+trap 'kill "${keepalive}" 2>/dev/null' EXIT
+
 mkdir -p "${out}" "$(dirname "${key}")"
 if [ ! -f "${key}" ]; then
   echo "==> Generating dev SSH key for the admin account..."
