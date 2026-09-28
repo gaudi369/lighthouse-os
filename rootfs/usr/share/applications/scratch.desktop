@@ -1,8 +1,11 @@
 [Desktop Entry]
 Name=Scratch
 Comment=Block-based programming for kids
-Exec=chromium-browser --no-first-run --app=https://scratch.mit.edu/projects/editor/
+Exec=lighthouse-webapp scratch
 Icon=applications-development
 Terminal=false
 Type=Application
 Categories=Education;Development;
+StartupWMClass=org.lighthouse.webapp.scratch
+X-Lighthouse-Url=https://scratch.mit.edu/projects/editor/
+X-Lighthouse-Allow=scratch.mit.edu;

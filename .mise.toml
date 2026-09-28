@@ -50,6 +50,11 @@ python3 -m json.tool {{config_root}}/rootfs/etc/chromium/policies/managed/parent
 echo "==> desktop entries"
 podman run --rm -v {{config_root}}/rootfs/usr/share/applications:/apps:ro \
   localhost/${IMAGE_NAME}:${IMAGE_TAG} sh -c 'desktop-file-validate /apps/*.desktop'
+echo "==> lighthouse-webapp tests"
+podman run --rm \
+  -v {{config_root}}/rootfs/usr/bin/lighthouse-webapp:/usr/bin/lighthouse-webapp:ro \
+  -v {{config_root}}/tests:/tests:ro \
+  localhost/${IMAGE_NAME}:${IMAGE_TAG} python3 -m unittest discover -s /tests
 echo "All checks passed."
 """
 

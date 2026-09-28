@@ -52,6 +52,13 @@ changes need `mise run build` first.
 ## Status
 
 - Working in `mise run dev` and `mise run shot`: niri, the Noctalia bar, and the PBS Kids and Scratch web apps.
+- Web apps run on `lighthouse-webapp` (WebKitGTK). Each app is one desktop
+  entry with `X-Lighthouse-Url`, `X-Lighthouse-Allow`, and optionally
+  `X-Lighthouse-Engine=chromium` or `X-Lighthouse-UserAgent`. Blocked
+  navigations are logged to stderr, so running an app with `mise run shot`
+  shows which domains it needs.
+- Known WebKit costs so far: PBS Kids needs a desktop Chrome user agent to
+  avoid its mobile "download our app" banner.
 - Not yet tested: booting the VM with the new autologin and admin account.
 - Noctalia runs without its setup wizard, telemetry or keyring prompts.
 

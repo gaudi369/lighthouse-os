@@ -1,0 +1,137 @@
+#!/usr/bin/python3
+"""Run a web site as a locked-down app.
+
+Each app is a desktop entry in /usr/share/applications/<id>.desktop with:
+
+    Exec=lighthouse-webapp <id>
+    X-Lighthouse-Url=https://pbskids.org/
+    X-Lighthouse-Allow=pbskids.org;pbs.org;
+    X-Lighthouse-Engine=webkit            (optional: webkit | chromium)
+    X-Lighthouse-UserAgent=...            (optional: for sites that sniff WebKit)
+
+With the webkit engine every navigation (pages, frames, pop-ups) must stay
+inside the app's allowlist; anything else is blocked and logged to stderr.
+Each app gets its own storage and its own Wayland app id.
+"""
+
+import argparse
+import os
+import sys
+from urllib.parse import urlsplit
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("WebKit", "6.0")
+from gi.repository import GLib, Gtk, WebKit  # noqa: E402
+
+try:
+    gi.require_version("GioUnix", "2.0")
+    from gi.repository.GioUnix import DesktopAppInfo
+except (ImportError, ValueError):
+    from gi.repository.Gio import DesktopAppInfo
+
+
+class App:
+    def __init__(self, app_id):
+        info = DesktopAppInfo.new(f"{app_id}.desktop")
+        if info is None:
+            sys.exit(f"lighthouse-webapp: no desktop entry for '{app_id}'")
+        self.id = app_id
+        self.name = info.get_name()
+        self.url = info.get_string("X-Lighthouse-Url")
+        self.allow = [d for d in (info.get_string("X-Lighthouse-Allow") or "").split(";") if d]
+        self.engine = info.get_string("X-Lighthouse-Engine") or "webkit"
+        self.user_agent = info.get_string("X-Lighthouse-UserAgent")
+        if not self.url or not self.allow:
+            sys.exit(f"lighthouse-webapp: '{app_id}' needs X-Lighthouse-Url and X-Lighthouse-Allow")
+
+    def allows(self, uri):
+        parts = urlsplit(uri)
+        if parts.scheme in ("about", "data", "blob"):
+            return True
+        if parts.scheme not in ("http", "https"):
+            return False
+        host = (parts.hostname or "").lower()
+        return any(host == d or host.endswith("." + d) for d in self.allow)
+
+
+def run_chromium(app, url):
+    data_dir = os.path.join(GLib.get_user_data_dir(), "lighthouse", "chromium", app.id)
+    os.execvp("chromium-browser", [
+        "chromium-browser", "--no-first-run", f"--user-data-dir={data_dir}", f"--app={url}",
+    ])
+
+
+def run_webkit(app, url):
+    gtk_app = Gtk.Application(application_id=f"org.lighthouse.webapp.{app.id.replace('-', '_')}")
+
+    def blocked(uri):
+        print(f"lighthouse-webapp[{app.id}]: blocked {uri}", file=sys.stderr, flush=True)
+
+    def on_decide_policy(view, decision, kind):
+        if kind == WebKit.PolicyDecisionType.RESPONSE:
+            return False
+        uri = decision.get_navigation_action().get_request().get_uri()
+        if not app.allows(uri):
+            blocked(uri)
+            decision.ignore()
+            return True
+        if kind == WebKit.PolicyDecisionType.NEW_WINDOW_ACTION:
+            # One window per app: pop-ups open in place.
+            decision.ignore()
+            view.load_uri(uri)
+            return True
+        return False
+
+    def on_download(session, download):
+        blocked(f"download {download.get_request().get_uri()}")
+        download.cancel()
+
+    def on_activate(gtk_app):
+        base = os.path.join("lighthouse", "webkit", app.id)
+        session = WebKit.NetworkSession.new(
+            os.path.join(GLib.get_user_data_dir(), base),
+            os.path.join(GLib.get_user_cache_dir(), base),
+        )
+        session.connect("download-started", on_download)
+
+        view = WebKit.WebView(network_session=session)
+        settings = view.get_settings()
+        settings.set_enable_developer_extras(False)
+        settings.set_javascript_can_open_windows_automatically(False)
+        if app.user_agent:
+            settings.set_user_agent(app.user_agent)
+        view.connect("decide-policy", on_decide_policy)
+        view.connect("context-menu", lambda *_: True)
+        view.connect("permission-request", lambda _v, req: (req.deny(), True)[1])
+
+        window = Gtk.ApplicationWindow(application=gtk_app, title=app.name)
+        window.set_default_size(1280, 800)
+        window.set_child(view)
+        view.bind_property("title", window, "title")
+        window.present()
+        view.load_uri(url)
+
+    gtk_app.connect("activate", on_activate)
+    return gtk_app.run([sys.argv[0]])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("app_id", help="desktop entry id, e.g. pbskids")
+    parser.add_argument("--url", help="start at this URL instead (must be allowed)")
+    args = parser.parse_args()
+
+    app = App(args.app_id)
+    url = args.url or app.url
+    if not app.allows(url):
+        sys.exit(f"lighthouse-webapp: {url} is not allowed for '{app.id}'")
+
+    if app.engine == "chromium":
+        run_chromium(app, url)
+    return run_webkit(app, url)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

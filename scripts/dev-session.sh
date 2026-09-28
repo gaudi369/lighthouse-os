@@ -22,6 +22,7 @@ for path in etc/niri etc/lighthouse etc/chromium/policies/managed; do
   mounts+=(-v "${root}/rootfs/${path}:/${path}:ro")
 done
 # Desktop entries are mounted file-by-file so the image's own entries stay visible.
+mounts+=(-v "${root}/rootfs/usr/bin/lighthouse-webapp:/usr/bin/lighthouse-webapp:ro")
 for f in "${root}"/rootfs/usr/share/applications/*.desktop; do
   mounts+=(-v "${f}:/usr/share/applications/$(basename "$f"):ro")
 done

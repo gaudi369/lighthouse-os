@@ -22,15 +22,22 @@ RUN dnf5 -y --setopt=timeout=60 install \
     dbus-daemon \
     && dnf5 clean all
 
-# 2. Layer in configurations and desktop shortcuts
+# 2. Runtime for lighthouse-webapp (web sites as apps)
+RUN dnf5 -y --setopt=timeout=60 install \
+    python3-gobject \
+    gtk4 \
+    webkitgtk6.0 \
+    && dnf5 clean all
+
+# 3. Layer in configurations and desktop shortcuts
 COPY rootfs/ /
 
-# 3. Hide launchers the kid should not see (general browser, shell internals)
+# 4. Hide launchers the kid should not see (general browser, shell internals)
 RUN for app in chromium-browser dev.noctalia.Noctalia; do \
       desktop-file-edit --set-key=NoDisplay --set-value=true /usr/share/applications/${app}.desktop; \
     done
 
-# 4. Enable systemd services
+# 5. Enable systemd services
 RUN systemctl enable greetd.service && \
     systemctl enable sshd.service && \
     bootc container lint
