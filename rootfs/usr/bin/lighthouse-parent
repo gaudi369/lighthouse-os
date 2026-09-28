@@ -1,0 +1,515 @@
+#!/usr/bin/python3
+"""Lighthouse parent service: the kid asks, a grown-up approves.
+
+    lighthouse-parent serve     run the service (lighthouse-parent.service)
+    lighthouse-parent token     print the parent sign-in token (needs sudo)
+
+Parents open http://<computer>:8080 and sign in with the token to:
+  - allow or deny sites the kid asked for (from a web app's "Ask a grown-up")
+  - see and change each web app's allowed sites
+  - add new web apps
+
+Kid-side API, accepted only from this computer and only as JSON:
+  POST /api/requests        {"app": "pbskids", "url": "https://..."} -> {"id": ...}
+  GET  /api/requests/<id>   -> {"status": "pending" | "approved" | "denied"}
+
+Approved changes are written as desktop entries in
+$STATE/apps/applications/, which lighthouse-webapp and the launcher read
+before the built-in ones in /usr/share/applications.
+"""
+
+import configparser
+import hmac
+import html
+import io
+import json
+import os
+import re
+import secrets
+import socket
+import sys
+import threading
+import time
+import uuid
+from http import HTTPStatus
+from http.cookies import SimpleCookie
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+STATE = Path(os.environ.get("LIGHTHOUSE_STATE_DIR", "/var/lib/lighthouse"))
+SYSTEM_APPS = Path(os.environ.get("LIGHTHOUSE_SYSTEM_APPS", "/usr/share/applications"))
+PORT = int(os.environ.get("LIGHTHOUSE_PARENT_PORT", "8080"))
+LOCAL_CLIENTS = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+APP_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+DOMAIN = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+
+
+# --- storage -----------------------------------------------------------------
+
+class Store:
+    """Requests (requests.json) and the parent's copies of app desktop entries."""
+
+    def __init__(self, state=STATE, system_apps=SYSTEM_APPS):
+        self.state = Path(state)
+        self.system_apps = Path(system_apps)
+        self.parent_apps = self.state / "apps" / "applications"
+        self.requests_file = self.state / "requests.json"
+        self.lock = threading.Lock()
+        self.parent_apps.mkdir(parents=True, exist_ok=True)
+
+    # Requests
+
+    def _load(self):
+        try:
+            return json.loads(self.requests_file.read_text())
+        except (OSError, ValueError):
+            return []
+
+    def _save(self, requests):
+        tmp = self.requests_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(requests, indent=2))
+        tmp.replace(self.requests_file)
+
+    def requests(self, status=None):
+        with self.lock:
+            return [r for r in self._load() if status is None or r["status"] == status]
+
+    def add_request(self, app_id, url):
+        host = (urlsplit(url).hostname or "").lower()
+        if not self.app(app_id) or urlsplit(url).scheme not in ("http", "https") or not DOMAIN.match(host):
+            raise ValueError("unknown app or unusable URL")
+        with self.lock:
+            requests = self._load()
+            for r in requests:  # asking twice doesn't queue twice
+                if r["status"] == "pending" and r["app"] == app_id and r["host"] == host:
+                    return r
+            r = {"id": uuid.uuid4().hex, "app": app_id, "url": url, "host": host,
+                 "status": "pending", "created": int(time.time())}
+            requests.append(r)
+            self._save(requests)
+            return r
+
+    def request(self, request_id):
+        return next((r for r in self.requests() if r["id"] == request_id), None)
+
+    def decide(self, request_id, approve, domain=None):
+        with self.lock:
+            requests = self._load()
+            r = next((r for r in requests if r["id"] == request_id and r["status"] == "pending"), None)
+            if r is None:
+                raise KeyError(request_id)
+            if approve:
+                self.allow_domain(r["app"], domain or suggested_domain(r["host"]))
+            r["status"] = "approved" if approve else "denied"
+            r["decided"] = int(time.time())
+            # Answering one request answers the other pending asks it covers.
+            if approve:
+                entry = self.app(r["app"])
+                for other in requests:
+                    if (other["status"] == "pending" and other["app"] == r["app"]
+                            and host_allowed(other["host"], entry["allow"])):
+                        other["status"], other["decided"] = "approved", r["decided"]
+            self._save(requests)
+            return r
+
+    # Apps
+
+    def _read_entry(self, path):
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        parser.optionxform = str
+        parser.read(path)
+        return parser
+
+    def app_path(self, app_id):
+        for d in (self.parent_apps, self.system_apps):
+            path = d / f"{app_id}.desktop"
+            if path.is_file():
+                return path
+        return None
+
+    def app(self, app_id):
+        if not APP_ID.match(app_id or ""):
+            return None
+        path = self.app_path(app_id)
+        if path is None:
+            return None
+        entry = self._read_entry(path)["Desktop Entry"]
+        if "X-Lighthouse-Url" not in entry:
+            return None
+        builtin = self.system_apps / f"{app_id}.desktop"
+        builtin_allow = (self._read_entry(builtin)["Desktop Entry"].get("X-Lighthouse-Allow", "")
+                         if builtin.is_file() else "")
+        return {
+            "id": app_id,
+            "name": entry.get("Name", app_id),
+            "url": entry["X-Lighthouse-Url"],
+            "allow": [d for d in entry.get("X-Lighthouse-Allow", "").split(";") if d],
+            "builtin_allow": [d for d in builtin_allow.split(";") if d],
+            "added_by_parent": not builtin.is_file(),
+        }
+
+    def apps(self):
+        ids = {p.stem for d in (self.parent_apps, self.system_apps) for p in d.glob("*.desktop")}
+        return [a for a in (self.app(i) for i in sorted(ids)) if a]
+
+    def _write_app(self, app_id, parser):
+        buf = io.StringIO()
+        parser.write(buf, space_around_delimiters=False)
+        path = self.parent_apps / f"{app_id}.desktop"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text("# Written by lighthouse-parent\n" + buf.getvalue())
+        tmp.chmod(0o644)
+        tmp.replace(path)
+
+    def set_allow(self, app_id, domains):
+        path = self.app_path(app_id)
+        if path is None:
+            raise KeyError(app_id)
+        parser = self._read_entry(path)
+        parser["Desktop Entry"]["X-Lighthouse-Allow"] = "".join(f"{d};" for d in domains)
+        self._write_app(app_id, parser)
+
+    def allow_domain(self, app_id, domain):
+        domain = domain.lower().strip()
+        if not DOMAIN.match(domain):
+            raise ValueError(f"not a domain: {domain}")
+        app = self.app(app_id)
+        if app is None:
+            raise KeyError(app_id)
+        if domain not in app["allow"]:
+            self.set_allow(app_id, app["allow"] + [domain])
+
+    def remove_domain(self, app_id, domain):
+        app = self.app(app_id)
+        if app is None:
+            raise KeyError(app_id)
+        if domain in app["builtin_allow"] and not app["added_by_parent"]:
+            raise ValueError("built-in domains can't be removed")
+        self.set_allow(app_id, [d for d in app["allow"] if d != domain])
+
+    def add_app(self, name, url):
+        parts = urlsplit(url.strip())
+        host = (parts.hostname or "").lower()
+        if parts.scheme != "https" or not DOMAIN.match(host):
+            raise ValueError("the address must start with https://")
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "app"
+        app_id = f"parent-{slug}"
+        if self.app_path(app_id):
+            raise ValueError("there is already an app with that name")
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser["Desktop Entry"] = {
+            "Type": "Application",
+            "Name": name.strip()[:60],
+            "Exec": f"lighthouse-webapp {app_id}",
+            "Icon": "applications-internet",
+            "Terminal": "false",
+            "Categories": "Education;",
+            "StartupWMClass": f"org.lighthouse.webapp.{app_id.replace('-', '_')}",
+            "X-Lighthouse-Url": url.strip(),
+            "X-Lighthouse-Allow": f"{suggested_domain(host)};",
+        }
+        self._write_app(app_id, parser)
+        return app_id
+
+    def remove_app(self, app_id):
+        app = self.app(app_id)
+        if app is None or not app["added_by_parent"]:
+            raise ValueError("only apps a parent added can be removed")
+        (self.parent_apps / f"{app_id}.desktop").unlink()
+
+
+def suggested_domain(host):
+    return host[4:] if host.startswith("www.") else host
+
+
+def host_allowed(host, allow):
+    return any(host == d or host.endswith("." + d) for d in allow)
+
+
+# --- token ---------------------------------------------------------------------
+
+def token_path():
+    return STATE / "parent-token"
+
+
+def ensure_token():
+    path = token_path()
+    if not path.exists():
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(secrets.token_urlsafe(16) + "\n")
+    return path.read_text().strip()
+
+
+# --- web -----------------------------------------------------------------------
+
+PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lighthouse for grown-ups</title>
+<style>
+:root {{ --bg:#F7F9F4; --card:#FFFFFF; --ink:#1C2733; --muted:#4A5868; --line:#D5DEE7;
+        --primary:#2A64A8; --on-primary:#FFFFFF; --deny:#8A2A22; }}
+@media (prefers-color-scheme: dark) {{
+  :root {{ --bg:#101B2D; --card:#1C2B44; --ink:#EAF0FA; --muted:#B7C4D8; --line:#2E4263;
+          --primary:#F2C14E; --on-primary:#101B2D; --deny:#FF8A80; }} }}
+* {{ box-sizing: border-box; }}
+body {{ margin:0; background:var(--bg); color:var(--ink);
+       font: 16px/1.5 "Noto Sans", system-ui, sans-serif; }}
+main {{ max-width: 760px; margin: 0 auto; padding: 16px; }}
+h1 {{ font-size: 24px; margin: 8px 0 16px; }}
+h2 {{ font-size: 19px; margin: 28px 0 10px; }}
+.card {{ background:var(--card); border:1px solid var(--line); border-radius:14px;
+        padding:14px 16px; margin-bottom:12px; }}
+.muted {{ color:var(--muted); font-size:14px; overflow-wrap:anywhere; }}
+.row {{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px; }}
+button, input {{ font:inherit; border-radius:10px; min-height:44px; }}
+button {{ border:0; padding:0 16px; background:var(--primary); color:var(--on-primary); font-weight:700; cursor:pointer; }}
+button.quiet {{ background:transparent; color:var(--deny); border:1px solid var(--line); }}
+input {{ border:1px solid var(--line); background:var(--bg); color:var(--ink); padding:0 12px; flex:1 1 200px; }}
+.chip {{ display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line);
+        border-radius:999px; padding:2px 4px 2px 12px; margin:4px 4px 0 0; font-size:14px; }}
+.chip button {{ min-height:28px; padding:0 10px; font-size:13px; }}
+.chip.fixed {{ padding-right:12px; }}
+.flash {{ background:var(--card); border-left:4px solid var(--primary); padding:10px 14px; margin-bottom:12px; }}
+form {{ margin:0; }}
+</style></head><body><main>{body}</main></body></html>"""
+
+
+def esc(s):
+    return html.escape(str(s), quote=True)
+
+
+class Handler(BaseHTTPRequestHandler):
+    store = None
+    token = None
+    sessions = set()
+    server_version = "lighthouse-parent"
+
+    # plumbing
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write("lighthouse-parent: %s\n" % (fmt % args))
+
+    def send(self, status, body, content_type="text/html; charset=utf-8", headers=()):
+        data = body.encode() if isinstance(body, str) else body
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
+        for k, v in headers:
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_json(self, status, obj):
+        self.send(status, json.dumps(obj), "application/json")
+
+    def redirect(self, location, headers=()):
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        for k, v in headers:
+            self.send_header(k, v)
+        self.end_headers()
+
+    def body(self, limit=16384):
+        length = int(self.headers.get("Content-Length") or 0)
+        return self.rfile.read(min(length, limit))
+
+    def form(self):
+        return {k: v[0] for k, v in parse_qs(self.body().decode(errors="replace")).items()}
+
+    def is_local(self):
+        return self.client_address[0] in LOCAL_CLIENTS
+
+    def signed_in(self):
+        cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        session = cookie.get("lighthouse_session")
+        return session is not None and session.value in self.sessions
+
+    # routes
+
+    def do_GET(self):
+        path = urlsplit(self.path).path
+        if path.startswith("/api/requests/"):
+            if not self.is_local():
+                return self.send_json(HTTPStatus.FORBIDDEN, {"error": "kid API is local only"})
+            r = self.store.request(path.rsplit("/", 1)[1])
+            return self.send_json(HTTPStatus.OK if r else HTTPStatus.NOT_FOUND,
+                                  {"status": r["status"]} if r else {"error": "no such request"})
+        if path == "/":
+            return self.send(HTTPStatus.OK, self.dashboard() if self.signed_in() else self.login_page())
+        self.send(HTTPStatus.NOT_FOUND, PAGE.format(body="<p>Not found.</p>"))
+
+    def do_POST(self):
+        path = urlsplit(self.path).path
+        if path == "/api/requests":
+            return self.kid_request()
+        if path == "/login":
+            return self.login()
+        if not self.signed_in():
+            return self.redirect("/")
+        form = self.form()
+        try:
+            flash = self.parent_action(path, form)
+        except (KeyError, ValueError) as e:
+            flash = f"That didn't work: {e.args[0] if e.args else e}"
+        self.send(HTTPStatus.OK, self.dashboard(flash))
+
+    def kid_request(self):
+        if not self.is_local():
+            return self.send_json(HTTPStatus.FORBIDDEN, {"error": "kid API is local only"})
+        # JSON only: a web page can't send this cross-origin without a CORS preflight.
+        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            return self.send_json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "JSON only"})
+        try:
+            data = json.loads(self.body())
+            r = self.store.add_request(str(data["app"]), str(data["url"]))
+        except (ValueError, KeyError, TypeError):
+            return self.send_json(HTTPStatus.BAD_REQUEST, {"error": "bad request"})
+        self.send_json(HTTPStatus.CREATED, {"id": r["id"], "status": r["status"]})
+
+    def login(self):
+        token = self.form().get("token", "").strip()
+        if not hmac.compare_digest(token.encode(), self.token.encode()):
+            time.sleep(1)
+            return self.send(HTTPStatus.UNAUTHORIZED, self.login_page("That code isn't right."))
+        session = secrets.token_urlsafe(24)
+        self.sessions.add(session)
+        self.redirect("/", [("Set-Cookie", f"lighthouse_session={session}; HttpOnly; SameSite=Strict; Path=/")])
+
+    def parent_action(self, path, form):
+        parts = path.strip("/").split("/")
+        if parts[:1] == ["requests"] and len(parts) == 3:
+            r = self.store.request(parts[1])
+            if r is None:
+                raise KeyError("no such request")
+            if parts[2] == "approve":
+                self.store.decide(parts[1], True, form.get("domain") or None)
+                return f"Allowed {form.get('domain') or suggested_domain(r['host'])}."
+            if parts[2] == "deny":
+                self.store.decide(parts[1], False)
+                return "Said no."
+        if parts[:1] == ["apps"] and len(parts) == 3:
+            app_id, action = parts[1], parts[2]
+            if action == "allow":
+                self.store.allow_domain(app_id, form.get("domain", ""))
+                return f"Added {form.get('domain')}."
+            if action == "remove-domain":
+                self.store.remove_domain(app_id, form.get("domain", ""))
+                return f"Removed {form.get('domain')}."
+            if action == "remove":
+                self.store.remove_app(app_id)
+                return "Removed the app."
+        if parts == ["apps"]:
+            app_id = self.store.add_app(form.get("name", ""), form.get("url", ""))
+            return f"Added {self.store.app(app_id)['name']}. It's in the launcher now."
+        raise KeyError("unknown action")
+
+    # pages
+
+    def login_page(self, error=""):
+        return PAGE.format(body=f"""
+<h1>Lighthouse for grown-ups</h1>
+{f'<p class="flash">{esc(error)}</p>' if error else ''}
+<form class="card" method="post" action="/login">
+  <p>Enter the parent code. On the computer, run <code>sudo lighthouse-parent token</code>.</p>
+  <div class="row"><input name="token" autocomplete="current-password" placeholder="Parent code" required>
+  <button>Sign in</button></div>
+</form>""")
+
+    def dashboard(self, flash=""):
+        apps = {a["id"]: a for a in self.store.apps()}
+        pending = self.store.requests("pending")
+        out = ["<h1>Lighthouse for grown-ups</h1>"]
+        if flash:
+            out.append(f'<p class="flash">{esc(flash)}</p>')
+
+        out.append(f"<h2>Asking to visit ({len(pending)})</h2>")
+        if not pending:
+            out.append('<p class="muted">Nothing waiting.</p>')
+        for r in sorted(pending, key=lambda r: r["created"]):
+            app_name = apps.get(r["app"], {}).get("name", r["app"])
+            domain = suggested_domain(r["host"])
+            asked = time.strftime("%b %d, %H:%M", time.localtime(r["created"]))
+            out.append(f"""<div class="card">
+  <strong>{esc(app_name)}</strong> wants to open <strong>{esc(r['host'])}</strong>
+  <div class="muted">{esc(r['url'])} · asked {esc(asked)}</div>
+  <div class="row">
+    <form method="post" action="/requests/{esc(r['id'])}/approve">
+      <input type="hidden" name="domain" value="{esc(domain)}">
+      <button>Allow {esc(domain)}</button></form>
+    <form method="post" action="/requests/{esc(r['id'])}/deny"><button class="quiet">Not now</button></form>
+  </div></div>""")
+
+        out.append("<h2>Web apps</h2>")
+        for a in apps.values():
+            chips = []
+            for d in a["allow"]:
+                if d in a["builtin_allow"] and not a["added_by_parent"]:
+                    chips.append(f'<span class="chip fixed">{esc(d)}</span>')
+                else:
+                    chips.append(f"""<span class="chip">{esc(d)}
+<form method="post" action="/apps/{esc(a['id'])}/remove-domain"><input type="hidden" name="domain" value="{esc(d)}"><button class="quiet" aria-label="Remove {esc(d)}">Remove</button></form></span>""")
+            remove = (f'<form method="post" action="/apps/{esc(a["id"])}/remove"><button class="quiet">Remove app</button></form>'
+                      if a["added_by_parent"] else "")
+            out.append(f"""<div class="card">
+  <strong>{esc(a['name'])}</strong> <span class="muted">{esc(a['url'])}</span>
+  <div>{''.join(chips)}</div>
+  <form class="row" method="post" action="/apps/{esc(a['id'])}/allow">
+    <input name="domain" placeholder="Allow another site, e.g. example.org" required>
+    <button>Allow</button></form>
+  <div class="row">{remove}</div>
+</div>""")
+
+        out.append("""<h2>Add a web app</h2>
+<form class="card" method="post" action="/apps">
+  <div class="row"><input name="name" placeholder="Name, e.g. NASA Kids" required></div>
+  <div class="row"><input name="url" placeholder="https://..." required><button>Add</button></div>
+  <p class="muted">The app can visit the site you enter. Anything else it links to will show up above as a question.</p>
+</form>""")
+        return PAGE.format(body="\n".join(out))
+
+
+class DualStackServer(ThreadingHTTPServer):
+    """Listens on IPv6 and IPv4 (IPv4 clients appear as ::ffff:a.b.c.d)."""
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
+def serve():
+    STATE.mkdir(parents=True, exist_ok=True)
+    Handler.store = Store()
+    Handler.token = ensure_token()
+    server = DualStackServer(("::", PORT), Handler)
+    print(f"lighthouse-parent: listening on port {PORT}", file=sys.stderr, flush=True)
+    if os.environ.get("LIGHTHOUSE_PARENT_SHOW_TOKEN"):  # mise run parent
+        print(f"Open http://localhost:{PORT} and sign in with: {Handler.token}", flush=True)
+    server.serve_forever()
+
+
+def main():
+    command = sys.argv[1:2]
+    if command == ["serve"]:
+        serve()
+    elif command == ["token"]:
+        try:
+            print(token_path().read_text().strip())
+        except PermissionError:
+            sys.exit("lighthouse-parent: permission denied (run with sudo)")
+        except FileNotFoundError:
+            sys.exit("lighthouse-parent: no token yet (is lighthouse-parent.service running?)")
+    else:
+        sys.exit(__doc__.strip())
+
+
+if __name__ == "__main__":
+    main()

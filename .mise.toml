@@ -24,6 +24,17 @@ podman build \
 # ------------------------------------------------------------------------------
 # Fast loops: no VM required
 # ------------------------------------------------------------------------------
+[tasks.parent]
+description = "Run the parent service on this computer (state in build/parent-state); pairs with mise run app"
+run = """
+mkdir -p {{config_root}}/build/parent-state
+LIGHTHOUSE_STATE_DIR={{config_root}}/build/parent-state \
+LIGHTHOUSE_SYSTEM_APPS={{config_root}}/rootfs/usr/share/applications \
+LIGHTHOUSE_PARENT_PORT=${WEB_PORT} \
+LIGHTHOUSE_PARENT_SHOW_TOKEN=1 \
+python3 {{config_root}}/rootfs/usr/bin/lighthouse-parent serve
+"""
+
 [tasks.dev]
 description = "Run the kid session nested in a window on the host (config edits need only a restart)"
 run = "{{config_root}}/scripts/run-on-host.sh niri"
@@ -73,8 +84,9 @@ podman run --rm -v {{config_root}}/rootfs/usr/share/applications:/apps:ro \
   localhost/${IMAGE_NAME}:${IMAGE_TAG} sh -c 'desktop-file-validate /apps/*.desktop'
 echo "==> themes (contrast and generated files)"
 python3 {{config_root}}/scripts/gen-themes.py --check >/dev/null || python3 {{config_root}}/scripts/gen-themes.py --check
-echo "==> lighthouse-webapp and lighthouse-theme tests"
+echo "==> lighthouse-webapp, lighthouse-theme and lighthouse-parent tests"
 podman run --rm \
+  -v {{config_root}}/rootfs/usr/bin/lighthouse-parent:/usr/bin/lighthouse-parent:ro \
   -v {{config_root}}/rootfs/usr/bin/lighthouse-webapp:/usr/bin/lighthouse-webapp:ro \
   -v {{config_root}}/rootfs/usr/bin/lighthouse-theme:/usr/bin/lighthouse-theme:ro \
   -v {{config_root}}/rootfs/usr/share/lighthouse:/usr/share/lighthouse:ro \

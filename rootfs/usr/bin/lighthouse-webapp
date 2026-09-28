@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 """Run a web site as a locked-down app.
 
-Each app is a desktop entry in /usr/share/applications/<id>.desktop with:
+Each app is a desktop entry, <id>.desktop, in /var/lib/lighthouse/apps/applications
+(the parent's copies, written by lighthouse-parent) or /usr/share/applications:
 
     Exec=lighthouse-webapp <id>
     X-Lighthouse-Url=https://pbskids.org/
@@ -11,54 +12,78 @@ Each app is a desktop entry in /usr/share/applications/<id>.desktop with:
 
 The blink engine (Chromium's renderer, via QtWebEngine) makes every navigation
 (pages, frames, redirects, pop-ups) stay inside the app's allowlist; anything
-else is blocked and logged to stderr. Each app gets its own storage and its own
-Wayland app id. The chromium engine runs Chromium itself, where only the global
+else is blocked and logged to stderr. A blocked page shows "Ask a grown-up",
+which sends a request to lighthouse-parent and opens the page once it's allowed.
+Each app gets its own storage and its own Wayland app id. The chromium engine runs Chromium itself, where only the global
 managed policy applies.
 """
 
 import argparse
 import configparser
+import html
 import json
 import os
 import re
 import sys
+import urllib.request
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 DATA_HOME = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
 CACHE_HOME = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
 THEME = "/etc/lighthouse/theme/theme.json"
 ICONS = Path("/usr/share/icons/Adwaita/symbolic/actions")
+PARENT_URL = os.environ.get("LIGHTHOUSE_PARENT_URL", "http://127.0.0.1:8080")
+# Only system-owned directories: an entry in the kid's home must not widen an allowlist.
+APP_DIRS = [Path(d) for d in os.environ.get(
+    "LIGHTHOUSE_APP_DIRS", "/var/lib/lighthouse/apps/applications:/usr/share/applications").split(":")]
 
 
 def find_desktop_entry(app_id):
-    dirs = [DATA_HOME] + [Path(d) for d in
-                          (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")]
-    for d in dirs:
-        path = d / "applications" / f"{app_id}.desktop"
+    for d in APP_DIRS:
+        path = d / f"{app_id}.desktop"
         if path.is_file():
             parser = configparser.ConfigParser(interpolation=None, strict=False)
             parser.optionxform = str  # keys are case-sensitive
             parser.read(path)
-            return parser["Desktop Entry"]
-    return None
+            return path, parser["Desktop Entry"]
+    return None, None
 
 
 class App:
     def __init__(self, app_id):
-        entry = find_desktop_entry(app_id)
+        self.id = app_id
+        self.path, entry = find_desktop_entry(app_id)
         if entry is None:
             sys.exit(f"lighthouse-webapp: no desktop entry for '{app_id}'")
-        self.id = app_id
         self.name = entry.get("Name", app_id)
         self.url = entry.get("X-Lighthouse-Url")
-        self.allow = [d for d in entry.get("X-Lighthouse-Allow", "").split(";") if d]
         self.engine = entry.get("X-Lighthouse-Engine", "blink")
         self.user_agent = entry.get("X-Lighthouse-UserAgent")
+        self.load_allow(entry)
         if not self.url or not self.allow:
             sys.exit(f"lighthouse-webapp: '{app_id}' needs X-Lighthouse-Url and X-Lighthouse-Allow")
 
+    def load_allow(self, entry):
+        self.allow = [d for d in entry.get("X-Lighthouse-Allow", "").split(";") if d]
+        self.stamp = self.entry_stamp()
+
+    def entry_stamp(self):
+        # The parent's copy may appear (or change) while the app runs.
+        try:
+            path, _ = find_desktop_entry(self.id)
+            return path, path.stat().st_mtime_ns
+        except (AttributeError, OSError):
+            return None
+
+    def refresh(self):
+        if getattr(self, "stamp", None) is not None and self.entry_stamp() != self.stamp:
+            _, entry = find_desktop_entry(self.id)
+            if entry is not None:
+                self.load_allow(entry)
+
     def allows(self, uri):
+        self.refresh()
         parts = urlsplit(uri)
         if parts.scheme in ("about", "data", "blob"):
             return True
@@ -70,6 +95,72 @@ class App:
 
 def blocked(app, what):
     print(f"lighthouse-webapp[{app.id}]: blocked {what}", file=sys.stderr, flush=True)
+
+
+def ask_parent(app, url):
+    """Queue a request with lighthouse-parent; returns its id, or None if unreachable."""
+    body = json.dumps({"app": app.id, "url": url}).encode()
+    req = urllib.request.Request(f"{PARENT_URL}/api/requests", data=body,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return json.load(r)["id"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def request_status(request_id):
+    try:
+        with urllib.request.urlopen(f"{PARENT_URL}/api/requests/{quote(request_id)}", timeout=2) as r:
+            return json.load(r).get("status")
+    except (OSError, ValueError):
+        return None
+
+
+KID_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>{title}</title><style>
+body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+       background:{surface}; color:{on_surface}; font-family:"Noto Sans",sans-serif; text-align:center; }}
+main {{ max-width:640px; padding:32px; }}
+.big {{ font-size:72px; line-height:1; }}
+h1 {{ font-size:34px; margin:18px 0 8px; }}
+p {{ font-size:20px; color:{on_surface_variant}; }}
+.site {{ display:inline-block; margin:6px 0 22px; padding:6px 16px; border-radius:999px;
+        background:{surface_variant}; color:{on_surface_variant}; font-weight:700; overflow-wrap:anywhere; }}
+button {{ font:inherit; font-size:22px; font-weight:800; border:0; border-radius:999px; padding:14px 28px;
+         margin:8px; cursor:pointer; background:{primary}; color:{on_primary}; }}
+button.quiet {{ background:{surface_variant}; color:{on_surface_variant}; }}
+button:focus-visible {{ outline:4px solid {secondary}; outline-offset:3px; }}
+</style></head><body><main>{body}</main></body></html>"""
+
+DEFAULT_COLORS = {"surface": "#F7F9F4", "on_surface": "#1C2733", "surface_variant": "#E2EBF3",
+                  "on_surface_variant": "#27384A", "primary": "#2A64A8", "on_primary": "#FFFFFF",
+                  "secondary": "#2C7340"}
+
+
+def kid_page(app, kind, url, theme):
+    """The pages a kid sees when a site isn't allowed yet."""
+    host = urlsplit(url).hostname or url
+    site = f'<div class="site">{html.escape(host)}</div>'
+    back = '<button class="quiet" onclick="history.back()">Go back</button>'
+    if kind == "blocked":
+        ask = f"lighthouse://ask?url={quote(url, safe='')}"
+        title, body = "Ask a grown-up", f"""<div class="big">🔒</div>
+<h1>This page isn't in {html.escape(app.name)} yet</h1>{site}
+<p>A grown-up can say yes to it.</p>
+<button autofocus onclick="location.replace('{ask}')">🙋 Ask a grown-up</button>{back}"""
+    elif kind == "asked":
+        title, body = "Asked a grown-up", f"""<div class="big">💌</div>
+<h1>You asked a grown-up!</h1>{site}
+<p>This page opens by itself as soon as they say yes.</p>{back}"""
+    elif kind == "denied":
+        title, body = "Not this time", f"""<div class="big">🙂</div>
+<h1>A grown-up said not this time</h1>{site}{back}"""
+    else:  # offline
+        title, body = "Ask a grown-up", f"""<div class="big">🙋</div>
+<h1>Couldn't send your question</h1>{site}
+<p>Ask a grown-up in person to allow it.</p>{back}"""
+    colors = {**DEFAULT_COLORS, **(theme["colors"] if theme else {})}
+    return KID_PAGE.format(title=f"{title} · {html.escape(app.name)}", body=body, **colors)
 
 
 def run_chromium(app, url):
@@ -101,12 +192,22 @@ def run_blink(app, url):
     # QtWebEngine reads these at startup: no remote DevTools, ever.
     os.environ.pop("QTWEBENGINE_REMOTE_DEBUGGING", None)
 
-    from PySide6.QtCore import QSize, Qt, QUrl
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize, Qt, QTimer, QUrl
     from PySide6.QtGui import QIcon, QKeySequence, QPixmap, QShortcut
     from PySide6.QtWebEngineCore import (QWebEnginePage, QWebEngineProfile, QWebEngineSettings,
-                                         QWebEngineUrlRequestInterceptor, QWebEngineUrlRequestInfo)
+                                         QWebEngineUrlRequestInterceptor, QWebEngineUrlRequestInfo,
+                                         QWebEngineUrlRequestJob, QWebEngineUrlScheme,
+                                         QWebEngineUrlSchemeHandler)
     from PySide6.QtWebEngineWidgets import QWebEngineView
     from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QSizePolicy, QToolBar, QWidget
+
+    # lighthouse:// holds the kid's "ask a grown-up" pages. It's a local scheme,
+    # so web pages can't link to it; only the app and its own pages can.
+    scheme = QWebEngineUrlScheme(b"lighthouse")
+    scheme.setSyntax(QWebEngineUrlScheme.Syntax.Host)
+    scheme.setFlags(QWebEngineUrlScheme.Flag.SecureScheme | QWebEngineUrlScheme.Flag.LocalScheme
+                    | QWebEngineUrlScheme.Flag.LocalAccessAllowed)
+    QWebEngineUrlScheme.registerScheme(scheme)
 
     qt_app = QApplication([sys.argv[0]])
     qt_app.setApplicationName(app.name)
@@ -117,6 +218,43 @@ def run_blink(app, url):
         qt_app.styleHints().setColorScheme(
             Qt.ColorScheme.Dark if theme.get("mode") == "dark" else Qt.ColorScheme.Light)
 
+    # What the kid is waiting on: {"url": ..., "request": id or None}
+    waiting = {}
+
+    def show(kind, target):
+        waiting.update(url=target)
+        view.load(QUrl(f"lighthouse://{kind}?url={quote(target, safe='')}"))
+
+    class KidPages(QWebEngineUrlSchemeHandler):
+        def requestStarted(self, job):
+            target = parse_qs(job.requestUrl().query()).get("url", [""])[0]
+            kind = job.requestUrl().host()
+            if not target.startswith(("http://", "https://")) or kind not in ("blocked", "ask"):
+                return job.fail(QWebEngineUrlRequestJob.Error.UrlInvalid)
+            if kind == "ask":
+                # Only our own "blocked" page may ask.
+                if job.initiator().scheme() != "lighthouse":
+                    return job.fail(QWebEngineUrlRequestJob.Error.RequestDenied)
+                waiting["request"] = ask_parent(app, target)
+                kind = "asked" if waiting["request"] else "offline"
+            else:
+                waiting["request"] = None
+            waiting["url"] = target
+            buf = QBuffer(parent=job)
+            buf.setData(QByteArray(kid_page(app, kind, target, theme).encode()))
+            buf.open(QIODevice.OpenModeFlag.ReadOnly)
+            job.reply(QByteArray(b"text/html"), buf)
+
+    def check_waiting():
+        """While a kid page is showing, open the page as soon as a grown-up allows it."""
+        if page.url().scheme() != "lighthouse" or not waiting.get("url"):
+            return
+        if app.allows(waiting["url"]):
+            view.load(QUrl(waiting.pop("url")))
+        elif waiting.get("request") and request_status(waiting["request"]) == "denied":
+            waiting["request"] = None
+            page.setHtml(kid_page(app, "denied", waiting["url"], theme), QUrl("lighthouse://denied"))
+
     class FrameGuard(QWebEngineUrlRequestInterceptor):
         """Second line of defence: block page and frame loads the allowlist doesn't cover."""
         FRAMES = (QWebEngineUrlRequestInfo.ResourceType.ResourceTypeMainFrame,
@@ -124,17 +262,22 @@ def run_blink(app, url):
 
         def interceptRequest(self, info):
             uri = info.requestUrl().toString()
-            if info.resourceType() in self.FRAMES and not app.allows(uri):
+            if (info.resourceType() in self.FRAMES and info.requestUrl().scheme() != "lighthouse"
+                    and not app.allows(uri)):
                 blocked(app, uri)
                 info.block(True)
 
     class Page(QWebEnginePage):
         def acceptNavigationRequest(self, qurl, nav_type, is_main_frame):
+            if qurl.scheme() == "lighthouse":
+                return True
             uri = qurl.toString()
-            if not app.allows(uri):
-                blocked(app, uri)
-                return False
-            return True
+            if app.allows(uri):
+                return True
+            blocked(app, uri)
+            if is_main_frame and qurl.scheme() in ("http", "https"):
+                QTimer.singleShot(0, lambda: show("blocked", uri))
+            return False
 
         def createWindow(self, _type):
             # One window per app: pop-ups and target=_blank links open in place
@@ -152,6 +295,8 @@ def run_blink(app, url):
         profile.setHttpUserAgent(app.user_agent)
     guard = FrameGuard()
     profile.setUrlRequestInterceptor(guard)
+    kid_pages = KidPages()
+    profile.installUrlSchemeHandler(b"lighthouse", kid_pages)
     profile.downloadRequested.connect(
         lambda d: (blocked(app, f"download {d.url().toString()}"), d.cancel()))
 
@@ -213,6 +358,10 @@ def run_blink(app, url):
     for keys, action in (("Alt+Left", view.back), ("Alt+Right", view.forward),
                          ("Alt+Home", lambda: view.load(QUrl(app.url)))):
         QShortcut(QKeySequence(keys), window, activated=action)
+
+    timer = QTimer(interval=3000)
+    timer.timeout.connect(check_waiting)
+    timer.start()
 
     view.load(QUrl(url))
     window.show()

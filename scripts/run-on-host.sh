@@ -22,6 +22,7 @@ mkdir -p -m 0700 "${state}/home" "${state}/run"
 
 exec podman run --rm $([ -t 0 ] && echo -it) \
   --userns=keep-id \
+  --network=host \
   --group-add keep-groups \
   --security-opt label=disable \
   --security-opt seccomp=unconfined \

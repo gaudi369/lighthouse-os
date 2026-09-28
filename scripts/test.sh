@@ -6,6 +6,7 @@ set -euo pipefail
 
 source "$(dirname "$0")/rootfs-mounts.sh"
 image="localhost/${IMAGE_NAME:-kid-os}:${IMAGE_TAG:-dev}-devtools"
+mkdir -p "${root}/build/shots"
 
 mounts=("${rootfs_mounts[@]}")
 [ -e /dev/dri ] && mounts+=(--device /dev/dri)
@@ -19,8 +20,11 @@ exec podman run --rm \
   --add-host allowed.test:127.0.0.1 \
   --add-host sub.allowed.test:127.0.0.1 \
   --add-host blocked.test:127.0.0.1 \
+  --add-host later.test:127.0.0.1 \
   --add-host allowed.test.blocked.test:127.0.0.1 \
   -v "${root}/tests:/tests:ro" \
+  -v "${root}/build/shots:/shots" \
+  -e SHOTS_DIR=/shots \
   -e HOME=/home/kid \
   -e XDG_RUNTIME_DIR=/run/kid \
   -e LANG=en_US.UTF-8 \

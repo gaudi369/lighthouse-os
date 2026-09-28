@@ -1,0 +1,27 @@
+[Unit]
+Description=Lighthouse parent service (kid requests and parent approvals)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/lighthouse-parent serve
+User=lighthouse
+Group=lighthouse
+# /var/lib/lighthouse: the kid's session reads apps/applications from here.
+StateDirectory=lighthouse
+StateDirectoryMode=0755
+UMask=0022
+Restart=on-failure
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

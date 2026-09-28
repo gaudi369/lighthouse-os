@@ -32,6 +32,7 @@ GCompris are placeholders.
 | Shell | Noctalia v5 (bar and launcher), config in `rootfs/etc/lighthouse/noctalia/` via `NOCTALIA_CONFIG_HOME` |
 | Web apps | `lighthouse-webapp`: Chromium's Blink engine through QtWebEngine (PySide6), one desktop entry per site |
 | Themes | `themes/*.toml` → `scripts/gen-themes.py` → Noctalia palette, niri colours, wallpaper; `lighthouse-theme` switches |
+| Parent service | `lighthouse-parent` on port 8080: kid requests in, parent approvals out; runs as its own `lighthouse` user |
 | Accounts | `kid` has no password and no sudo; `admin` uses an SSH key only |
 | Laptops | Wi-Fi, audio firmware, power profiles, Bluetooth, backlight; unattended installer ISO |
 
@@ -60,7 +61,7 @@ scroll it. Web apps have a toolbar with back, forward and home buttons.
 
 ### Web apps
 
-Each web app is one desktop entry in `rootfs/usr/share/applications/`:
+Each built-in web app is one desktop entry in `rootfs/usr/share/applications/`:
 
 ```ini
 [Desktop Entry]
@@ -76,9 +77,19 @@ X-Lighthouse-Allow=pbskids.org;pbs.org;
 `X-Lighthouse-Allow` lists domains; each includes its subdomains. Every
 page load, embedded frame and redirect must stay inside that list, or it is
 blocked and logged (`lighthouse-webapp[pbskids]: blocked https://...`).
-Pop-ups open in the same window. Downloads, camera/mic/location prompts,
+When a page is blocked, the kid sees "This page isn't in PBS Kids yet" with
+**Ask a grown-up** and **Go back**. Asking sends the request to
+`lighthouse-parent`; the page opens by itself as soon as a grown-up allows
+it, or says "not this time" if they don't. These pages live on a local
+`lighthouse://` scheme that web pages can't link to. Pop-ups open in the
+same window. Downloads, camera/mic/location prompts,
 the context menu and developer tools are off. Each app has its own storage
 (`~/.local/share/lighthouse/blink/<id>`) and its own window id.
+
+Apps a parent adds or changes are written to
+`/var/lib/lighthouse/apps/applications/`, which `lighthouse-webapp` and the
+launcher read before `/usr/share/applications`. The kid's home directory is
+never read for app entries, so the kid can't widen an allowlist.
 
 Optional keys: `X-Lighthouse-UserAgent` for sites that sniff the browser,
 and `X-Lighthouse-Engine=chromium` to run the full Chromium browser instead.
@@ -117,7 +128,21 @@ polkit allows for the active local session without a password
 (`org.lighthouse.theme.policy`). Under pkexec, `lighthouse-theme` only
 allows `set`, and refuses it while a parent has locked the theme.
 
-### Parent commands
+### For parents
+
+Open `http://<computer>:8080` from a phone or laptop on the same network
+(`http://localhost:8080` for the VM) and sign in with the parent code from
+`sudo lighthouse-parent token`. The page shows:
+
+- **Asking to visit**: each site the kid asked for, with **Allow** (the
+  site's domain, without `www.`) or **Not now**.
+- **Web apps**: each app's allowed sites; add more or remove ones you added.
+- **Add a web app**: a name and an `https://` address; it appears in the
+  launcher straight away.
+
+The kid-side API only accepts JSON from the computer itself; everything
+else needs the parent code. It is plain HTTP on the local network for now
+(Tailscale comes later), so use it on a network you trust.
 
 Over SSH as `admin` (`mise run ssh` for the VM):
 
@@ -126,6 +151,7 @@ Over SSH as `admin` (`mise run ssh` for the VM):
 | `lighthouse-theme list` | Show themes; `*` marks the current one |
 | `sudo lighthouse-theme set <id>` | Switch the theme (works even when locked) |
 | `sudo lighthouse-theme lock` / `unlock` | Stop or allow the kid changing it |
+| `sudo lighthouse-parent token` | Show the parent code for the web page |
 
 ## Development
 
@@ -134,10 +160,11 @@ Most work doesn't need a VM. Pick the fastest loop that covers your change:
 | Task | What it does | Use it for |
 |---|---|---|
 | `mise run build` | Build the container image | Package changes |
-| `mise run check` | Validate niri config, Chromium policy, desktop entries and themes; unit tests for the web app allowlist and `lighthouse-theme` | Every change |
+| `mise run check` | Validate niri config, Chromium policy, desktop entries and themes; unit tests for the web app allowlist, `lighthouse-theme` and `lighthouse-parent` | Every change |
 | `mise run app -- pbskids` | Open one app in a normal window on your desktop; blocked navigations print in the terminal. Also `pbskids@<url>`, `chromium [url]` (kid policy, with an address bar), or any desktop entry like `tuxpaint` | Trying and exploring apps |
+| `mise run parent` | Run the parent service on your computer (state in `build/parent-state`); open http://localhost:8080 with the printed code. `mise run app` in another terminal talks to it, so you can ask and approve end to end | Parent page and the ask flow |
 | `mise run dev` | Run the whole kid session in a window on your desktop | Shell, keybindings, layout |
-| `mise run test` | Browser tests: allowlist (navigation, redirects, frames, lookalike domains, file URLs, downloads) and the Chromium policy, headless and offline | Web app or policy changes |
+| `mise run test` | Browser tests, headless and offline: allowlist (navigation, redirects, frames, lookalike domains, file URLs, downloads), the ask page, a parent approving through the real service, and the Chromium policy. Saves `build/shots/ask-a-grown-up.png` | Web app, parent or policy changes |
 | `mise run shot -- <app>` | Run the kid session headless, open apps, save a screenshot and logs to `build/shots/` | Checking the result without a window |
 | `mise run themes` | Screenshot every theme into `build/shots/themes.png` | Theme changes |
 | `mise run disk` | Build a bootable qcow2 (needs sudo) | Boot, login, services |
@@ -161,9 +188,9 @@ a laptop you intend to wipe. It installs `kid` (autologin) and `admin`
 | Goal | Done | Still to do |
 |---|---|---|
 | 1. One scrolling strip | niri strip, full-width apps, Mod+R half width, shortcuts overlay, no terminal or general browser in the launcher | Keep kids to one workspace (niri still has vertical workspace swipes); check touchpad gestures on real hardware; a friendlier launcher |
-| 2. Web sites are apps | `lighthouse-webapp` on Blink with per-app allowlists, storage and window ids; toolbar; offline tests | App icons; one window per app (opening twice gives two); a friendly "ask a grown-up" page for blocked links; video playback checked |
+| 2. Web sites are apps | `lighthouse-webapp` on Blink with per-app allowlists, storage and window ids; toolbar; "Ask a grown-up" page for blocked links; offline tests | Launcher icons (once the app list is decided); one window per app (opening twice gives two); video playback checked |
 | 3. Fully themeable | Eight themes with contrast checks; bar, focus ring, wallpaper, web app toolbars and picker follow the theme; kid picker with parent lock | Theme GTK/Qt apps (Tux Paint, GCompris, dialogs); confirm live switching in the VM |
-| 4. Parent control plane | Parent commands over SSH; key-only admin account | The web app (approve apps and requests, time limits, activity); request queue from the kid side; Tailscale setup flow |
+| 4. Parent control plane | Parent web page: approve or deny the kid's requests, edit each app's allowed sites, add web apps; parent code sign-in; commands over SSH | Time limits and activity; notifying parents of new requests; Tailscale setup flow (and serving only on Tailscale); HTTPS |
 | 5. Works out of the box | Immutable bootc image, autologin, no admin rights for the kid, laptop hardware support, unattended installer | Publish the image to a registry and turn on automatic updates; real-hardware testing; a first-boot setup for the parent (admin key, Wi-Fi, Tailscale) instead of the dev SSH key |
 
 Known issues and open questions:

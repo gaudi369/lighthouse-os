@@ -10,6 +10,8 @@ hotkey-overlay {
 environment {
     NOCTALIA_CONFIG_HOME "/etc/lighthouse"
     XDG_SESSION_TYPE "wayland"
+    // Web apps a parent added or changed (lighthouse-parent) come first.
+    XDG_DATA_DIRS "/var/lib/lighthouse/apps:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
 }
 
 spawn-at-startup "noctalia"

@@ -1,12 +1,14 @@
 """Browser integration tests: lighthouse-webapp and the Chromium policy.
 
 Runs inside the devtools image under a headless sway (see scripts/test.sh).
-A local web server answers for allowed.test, sub.allowed.test and blocked.test
-(all mapped to 127.0.0.1), so no internet access is needed. Test pages trigger
-their own navigations with JavaScript; the result is read from window titles
-(via swaymsg) and from lighthouse-webapp's "blocked ..." log lines.
+A local web server answers for allowed.test, sub.allowed.test, blocked.test and
+later.test (all mapped to 127.0.0.1), so no internet access is needed. Test
+pages trigger their own navigations with JavaScript; the result is read from
+window titles (via swaymsg) and from lighthouse-webapp's "blocked ..." log lines.
+A real lighthouse-parent runs alongside for the ask-a-grown-up flow.
 """
 
+import http.client
 import http.server
 import json
 import os
@@ -20,6 +22,9 @@ PORT = 8000
 ALLOWED = f"http://allowed.test:{PORT}"
 BLOCKED = f"http://blocked.test:{PORT}"
 APP_ID = "lighthouse-test"
+ASK_TITLE = "Ask a grown-up · Lighthouse Test"
+TMP = tempfile.mkdtemp()
+PARENT_PORT = 8080
 
 
 def page(title, script=""):
@@ -35,6 +40,7 @@ ROUTES = {
     "/home": (200, {}, page("HOME")),
     "/target": (200, {}, page("TARGET {host}")),
     "/nav-blocked": (200, {}, page("NAV-BLOCKED", go(f"{BLOCKED}/target"))),
+    "/nav-later": (200, {}, page("NAV-LATER", go(f"http://later.test:{PORT}/target"))),
     "/nav-subdomain": (200, {}, page("NAV-SUB", go(f"http://sub.allowed.test:{PORT}/target"))),
     "/nav-lookalike": (200, {}, page("NAV-LOOKALIKE", go(f"http://allowed.test.blocked.test:{PORT}/target"))),
     "/nav-file": (200, {}, page("NAV-FILE", go("file:///etc/passwd"))),
@@ -89,15 +95,27 @@ class Browser(unittest.TestCase):
         cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
 
-        apps = os.path.join(os.environ["HOME"], ".local/share/applications")
-        os.makedirs(apps, exist_ok=True)
-        with open(os.path.join(apps, f"{APP_ID}.desktop"), "w") as f:
+        system, state = os.path.join(TMP, "system"), os.path.join(TMP, "state")
+        os.makedirs(system)
+        with open(os.path.join(system, f"{APP_ID}.desktop"), "w") as f:
             f.write("[Desktop Entry]\nType=Application\nName=Lighthouse Test\n"
                     f"Exec=lighthouse-webapp {APP_ID}\n"
                     f"X-Lighthouse-Url={ALLOWED}/home\nX-Lighthouse-Allow=allowed.test;\n")
+        os.environ["LIGHTHOUSE_APP_DIRS"] = f"{state}/apps/applications:{system}"
+
+        env = {**os.environ, "LIGHTHOUSE_STATE_DIR": state, "LIGHTHOUSE_SYSTEM_APPS": system,
+               "LIGHTHOUSE_PARENT_PORT": str(PARENT_PORT)}
+        cls.parent = subprocess.Popen(["lighthouse-parent", "serve"], env=env,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        token_file = os.path.join(state, "parent-token")
+        wait_for(lambda: os.path.exists(token_file), timeout=10)
+        with open(token_file) as f:
+            cls.token = f.read().strip()
 
     @classmethod
     def tearDownClass(cls):
+        cls.parent.terminate()
+        cls.parent.wait(timeout=10)
         cls.server.shutdown()
         cls.server.server_close()
 
@@ -119,11 +137,23 @@ class Browser(unittest.TestCase):
         self.assertTrue(ok, f"window never matched; titles={titles}\n{output}")
         return titles, output
 
-    def assert_blocked(self, path, title, blocked_url):
-        titles, log = self.run_app(path, lambda t: title in t)
+    def assert_blocked(self, path, blocked_url):
+        """A blocked page swaps in the kid's "Ask a grown-up" page."""
+        titles, log = self.run_app(path, lambda t: ASK_TITLE in t)
         self.assertIn(f"blocked {blocked_url}", log)
         self.assertNotIn("TARGET blocked.test", titles)
-        self.assertIn(title, titles)
+
+    def parent_allows(self, domain):
+        """Sign in to lighthouse-parent as a grown-up and allow a domain for the test app."""
+        def post(path, body, cookie=""):
+            conn = http.client.HTTPConnection("127.0.0.1", PARENT_PORT, timeout=5)
+            conn.request("POST", path, body, {"Content-Type": "application/x-www-form-urlencoded",
+                                              "Cookie": cookie})
+            r = conn.getresponse()
+            r.read()
+            return r
+        cookie = post("/login", f"token={self.token}").getheader("Set-Cookie").split(";")[0]
+        self.assertEqual(post(f"/apps/{APP_ID}/allow", f"domain={domain}", cookie).status, 200)
 
     # --- lighthouse-webapp ---------------------------------------------------
 
@@ -131,7 +161,7 @@ class Browser(unittest.TestCase):
         self.run_app("/home", lambda t: "HOME" in t, settle=0)
 
     def test_navigation_to_other_site_is_blocked(self):
-        self.assert_blocked("/nav-blocked", "NAV-BLOCKED", f"{BLOCKED}/target")
+        self.assert_blocked("/nav-blocked", f"{BLOCKED}/target")
 
     def test_redirect_to_other_site_is_blocked(self):
         titles, log = self.run_app("/redirect", lambda t: bool(t))
@@ -143,12 +173,30 @@ class Browser(unittest.TestCase):
         self.assertIn(f"blocked {BLOCKED}/target", log)
 
     def test_lookalike_domain_is_blocked(self):
-        self.assert_blocked("/nav-lookalike", "NAV-LOOKALIKE",
-                            f"http://allowed.test.blocked.test:{PORT}/target")
+        self.assert_blocked("/nav-lookalike", f"http://allowed.test.blocked.test:{PORT}/target")
 
     def test_file_urls_are_blocked(self):
         titles, _ = self.run_app("/nav-file", lambda t: "NAV-FILE" in t)
         self.assertIn("NAV-FILE", titles)
+
+    def test_blocked_page_opens_once_a_grown_up_allows_it(self):
+        with tempfile.TemporaryFile(mode="w+") as log:
+            proc = subprocess.Popen(["lighthouse-webapp", APP_ID, "--url", ALLOWED + "/nav-later"],
+                                    stdout=log, stderr=subprocess.STDOUT)
+            try:
+                asked = wait_for(lambda: ASK_TITLE in window_titles())
+                if os.environ.get("SHOTS_DIR"):  # scripts/test.sh saves what the kid saw
+                    time.sleep(1)
+                    subprocess.run(["grim", os.path.join(os.environ["SHOTS_DIR"], "ask-a-grown-up.png")])
+                self.parent_allows("later.test")
+                opened = wait_for(lambda: "TARGET later.test" in window_titles(), timeout=15)
+                titles = window_titles()
+            finally:
+                proc.terminate()
+                proc.wait(timeout=10)
+                wait_for(lambda: not window_titles(), timeout=5)
+        self.assertTrue(asked, "the ask page never appeared")
+        self.assertTrue(opened, f"the page didn't open after approval; titles={titles}")
 
     def test_subdomain_is_allowed(self):
         self.run_app("/nav-subdomain", lambda t: "TARGET sub.allowed.test" in t, settle=0)

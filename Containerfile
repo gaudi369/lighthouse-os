@@ -15,7 +15,7 @@ RUN dnf5 -y --setopt=timeout=60 install \
     gcompris-qt \
     glibc-langpack-en \
     google-noto-sans-fonts \
-    google-noto-emoji-fonts \
+    google-noto-color-emoji-fonts \
     flatpak \
     openssh-server \
     desktop-file-utils \
@@ -54,5 +54,5 @@ RUN printf '\n# Lighthouse\nfullscreen=yes\nnative=yes\n' >> /etc/tuxpaint/tuxpa
 RUN systemctl enable greetd.service && \
     systemctl enable sshd.service && \
     systemctl enable tuned.service tuned-ppd.service && \
-    systemctl enable lighthouse-hardware.service && \
+    systemctl enable lighthouse-hardware.service lighthouse-parent.service && \
     bootc container lint
