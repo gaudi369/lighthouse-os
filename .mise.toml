@@ -1,9 +1,8 @@
 [env]
 IMAGE_NAME   = "kid-os"
-IMAGE_TAG    = "dev"
+IMAGE_TAG    = "{{ get_env(name='IMAGE_TAG', default='dev') }}"
 BUILD_DIR    = "{{config_root}}/build"
 DISK_IMAGE   = "{{config_root}}/build/qcow2/disk.qcow2"
-CONFIG_FILE  = "{{config_root}}/build/config.toml"
 SSH_KEY      = "{{config_root}}/build/ssh/lighthouse_dev"
 SSH_PORT     = "2222"
 WEB_PORT     = "8080"
@@ -64,38 +63,19 @@ echo "All checks passed."
 [tasks.disk]
 description = "Convert OCI container into a QCOW2 virtual drive via bootc-image-builder"
 depends = ["build"]
+run = "{{config_root}}/scripts/image-builder.sh qcow2 {{config_root}}/config.toml.in ${BUILD_DIR}"
+
+[tasks.iso]
+description = "Build the unattended laptop installer ISO (WARNING: it erases every disk it finds)"
+depends = ["build"]
 run = """
-mkdir -p "${BUILD_DIR}/ssh"
-
-if [ ! -f "${SSH_KEY}" ]; then
-  echo "==> Generating dev SSH key for the admin account..."
-  ssh-keygen -q -t ed25519 -N "" -C "lighthouse-dev" -f "${SSH_KEY}"
-fi
-sed "s|@ADMIN_SSH_KEY@|$(cat "${SSH_KEY}.pub")|" {{config_root}}/config.toml.in > "${CONFIG_FILE}"
-
-echo "==> Transferring built image to root podman store..."
-podman save "localhost/${IMAGE_NAME}:${IMAGE_TAG}" | sudo podman load
-
-echo "==> Packaging container into QCOW2 disk..."
-sudo podman run \
-  --rm \
-  -it \
-  --privileged \
-  --pull=newer \
-  --security-opt label=type:unconfined_t \
-  -v "${CONFIG_FILE}:/config.toml:ro" \
-  -v "${BUILD_DIR}:/output" \
-  -v /var/lib/containers/storage:/var/lib/containers/storage \
-  quay.io/centos-bootc/bootc-image-builder:latest \
-  --type qcow2 \
-  --target-arch x86_64 \
-  --rootfs btrfs \
-  --config /config.toml \
-  localhost/${IMAGE_NAME}:${IMAGE_TAG}
-
-echo "==> Setting permissions on generated disk..."
-sudo chown -R "${USER}:${USER}" "${BUILD_DIR}"
+{{config_root}}/scripts/image-builder.sh anaconda-iso {{config_root}}/installer.toml.in ${BUILD_DIR}/iso
+echo "Installer: ${BUILD_DIR}/iso/bootiso/install.iso"
 """
+
+[tasks.iso-test]
+description = "Install from the ISO onto an empty disk in a UEFI VM, then boot it"
+run = "{{config_root}}/scripts/iso-test.sh"
 
 # ------------------------------------------------------------------------------
 # 3. Launch: Interactive VM with Surface hardware acceleration

@@ -1,0 +1,28 @@
+# bootc-image-builder config for the laptop installer ISO (mise run iso).
+# WARNING: this installer is unattended and ERASES EVERY DISK in the machine.
+#
+# An ISO can't use [customizations.user]; accounts are created in the
+# kickstart instead. bootc-image-builder adds the container install line itself.
+
+[customizations.installer.kickstart]
+contents = """
+text --non-interactive
+lang en_US.UTF-8
+keyboard us
+timezone @TIMEZONE@ --utc
+
+zerombr
+clearpart --all --initlabel --disklabel=gpt
+autopart --noswap --type=btrfs
+
+network --bootproto=dhcp --device=link --activate --onboot=on
+
+rootpw --lock
+# The child's account: autologin only, no password, no admin rights.
+user --name=kid --gecos="Kid Explorer"
+# The parent/maintainer account: SSH key only.
+user --name=admin --groups=wheel --gecos="Lighthouse Admin"
+sshkey --username=admin "@ADMIN_SSH_KEY@"
+
+reboot --eject
+"""

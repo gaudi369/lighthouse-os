@@ -29,18 +29,29 @@ RUN dnf5 -y --setopt=timeout=60 install \
     webkitgtk6.0 \
     && dnf5 clean all
 
-# 3. Layer in configurations and desktop shortcuts
+# 3. Laptop hardware: Wi-Fi, audio firmware, power profiles, backlight
+RUN dnf5 -y --setopt=timeout=60 install \
+    NetworkManager-wifi \
+    iwlwifi-mvm-firmware \
+    iwlwifi-dvm-firmware \
+    alsa-sof-firmware \
+    tuned-ppd \
+    brightnessctl \
+    && dnf5 clean all
+
+# 4. Layer in configurations and desktop shortcuts
 COPY rootfs/ /
 
-# 4. Hide launchers the kid should not see (general browser, shell internals)
+# 5. Hide launchers the kid should not see (general browser, shell internals)
 RUN for app in chromium-browser dev.noctalia.Noctalia; do \
       desktop-file-edit --set-key=NoDisplay --set-value=true /usr/share/applications/${app}.desktop; \
     done
 
-# 5. App defaults: Tux Paint fills the screen at native resolution
+# 6. App defaults: Tux Paint fills the screen at native resolution
 RUN printf '\n# Lighthouse\nfullscreen=yes\nnative=yes\n' >> /etc/tuxpaint/tuxpaint.conf
 
-# 6. Enable systemd services
+# 7. Enable systemd services
 RUN systemctl enable greetd.service && \
     systemctl enable sshd.service && \
+    systemctl enable tuned.service tuned-ppd.service && \
     bootc container lint

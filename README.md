@@ -45,6 +45,13 @@ Most work doesn't need a VM. Pick the fastest loop that covers your change:
 | `mise run disk` | Build a bootable qcow2 (needs sudo) | Boot, login, services |
 | `mise run launch` / `sandbox` | Boot the VM (`sandbox` discards changes) | Same |
 | `mise run ssh` | SSH into the VM as `admin` | Debugging the VM |
+| `mise run iso` | Build the unattended laptop installer (needs sudo) | Installing on real hardware |
+| `mise run iso-test` | Install from the ISO onto an empty disk in a UEFI VM, then boot it | Testing the installer |
+
+**The installer ISO erases every disk in the machine it boots on, without
+asking.** Write it to a USB stick (`build/iso/bootiso/install.iso`) only for
+a laptop you intend to wipe. It installs `kid` (autologin) and `admin`
+(the dev SSH key in `build/ssh/`), using your current timezone.
 
 Config edits under `rootfs/` only need a restart of `mise run dev`. Package
 changes need `mise run build` first.
@@ -59,7 +66,11 @@ changes need `mise run build` first.
   shows which domains it needs.
 - Known WebKit costs so far: PBS Kids needs a desktop Chrome user agent to
   avoid its mobile "download our app" banner.
-- Not yet tested: booting the VM with the new autologin and admin account.
+- The VM boots into the kid session with autologin; `admin` SSH works.
+- Laptop hardware support: Wi-Fi (NetworkManager-wifi, Intel/Realtek/
+  MediaTek/Atheros/Broadcom firmware), Intel SOF audio, power profiles
+  (tuned-ppd), Bluetooth, backlight. Not yet tested on real hardware.
+- Not yet tested: the installer ISO end to end.
 - Noctalia runs without its setup wizard, telemetry or keyring prompts.
 
 ## History
