@@ -8,10 +8,16 @@ Parents open http://<computer>:8080 and sign in with the token to:
   - allow or deny sites the kid asked for (from a web app's "Ask a grown-up")
   - see and change each web app's allowed sites
   - add new web apps
+  - set screen time (a daily limit and the hours the computer is open),
+    give more time, or lock the computer now
 
 Kid-side API, accepted only from this computer and only as JSON:
   POST /api/requests        {"app": "pbskids", "url": "https://..."} -> {"id": ...}
+                            {"kind": "time"} asks for more time -> {"id": ...}
   GET  /api/requests/<id>   -> {"status": "pending" | "approved" | "denied"}
+  POST /api/session         {"active": true} every 30 s from lighthouse-timekeeper;
+                            counts screen time and returns whether to lock
+                            -> {"state": "open" | "locked", "reason", "remaining", "opens"}
 
 Approved changes are written as desktop entries in
 $STATE/apps/applications/, which lighthouse-webapp and the launcher read
@@ -19,6 +25,7 @@ before the built-in ones in /usr/share/applications.
 """
 
 import configparser
+import datetime
 import hmac
 import html
 import io
@@ -43,6 +50,12 @@ PORT = int(os.environ.get("LIGHTHOUSE_PARENT_PORT", "8080"))
 LOCAL_CLIENTS = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 APP_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 DOMAIN = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+CLOCK = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+EXTRA_MINUTES = 15          # what "Ask for more time" asks for
+HEARTBEAT_GAP = 120         # seconds; a longer gap (sleep, crash) isn't counted as screen time
+USAGE_DAYS = 31             # days of screen time history kept
+NO_LIMITS = {"weekday_minutes": None, "weekend_minutes": None, "opens": None, "closes": None,
+             "paused": False, "extra_until": 0}
 
 
 # --- storage -----------------------------------------------------------------
@@ -55,21 +68,32 @@ class Store:
         self.system_apps = Path(system_apps)
         self.parent_apps = self.state / "apps" / "applications"
         self.requests_file = self.state / "requests.json"
+        self.limits_file = self.state / "limits.json"
+        self.usage_file = self.state / "usage.json"
         self.lock = threading.Lock()
+        self.last_beat = None  # when lighthouse-timekeeper last reported an unlocked screen
         self.parent_apps.mkdir(parents=True, exist_ok=True)
 
     # Requests
 
-    def _load(self):
+    @staticmethod
+    def _read_json(path, default):
         try:
-            return json.loads(self.requests_file.read_text())
+            return json.loads(path.read_text())
         except (OSError, ValueError):
-            return []
+            return default
+
+    @staticmethod
+    def _write_json(path, data):
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(path)
+
+    def _load(self):
+        return self._read_json(self.requests_file, [])
 
     def _save(self, requests):
-        tmp = self.requests_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(requests, indent=2))
-        tmp.replace(self.requests_file)
+        self._write_json(self.requests_file, requests)
 
     def requests(self, status=None):
         with self.lock:
@@ -82,9 +106,21 @@ class Store:
         with self.lock:
             requests = self._load()
             for r in requests:  # asking twice doesn't queue twice
-                if r["status"] == "pending" and r["app"] == app_id and r["host"] == host:
+                if r["status"] == "pending" and r.get("app") == app_id and r.get("host") == host:
                     return r
-            r = {"id": uuid.uuid4().hex, "app": app_id, "url": url, "host": host,
+            r = {"id": uuid.uuid4().hex, "kind": "site", "app": app_id, "url": url, "host": host,
+                 "status": "pending", "created": int(time.time())}
+            requests.append(r)
+            self._save(requests)
+            return r
+
+    def add_time_request(self):
+        with self.lock:
+            requests = self._load()
+            for r in requests:
+                if r["status"] == "pending" and r.get("kind") == "time":
+                    return r
+            r = {"id": uuid.uuid4().hex, "kind": "time", "minutes": EXTRA_MINUTES,
                  "status": "pending", "created": int(time.time())}
             requests.append(r)
             self._save(requests)
@@ -99,19 +135,121 @@ class Store:
             r = next((r for r in requests if r["id"] == request_id and r["status"] == "pending"), None)
             if r is None:
                 raise KeyError(request_id)
-            if approve:
+            if approve and r.get("kind") == "time":
+                self._give_time(r["minutes"])
+            elif approve:
                 self.allow_domain(r["app"], domain or suggested_domain(r["host"]))
             r["status"] = "approved" if approve else "denied"
             r["decided"] = int(time.time())
             # Answering one request answers the other pending asks it covers.
-            if approve:
+            if approve and r.get("kind") != "time":
                 entry = self.app(r["app"])
                 for other in requests:
-                    if (other["status"] == "pending" and other["app"] == r["app"]
+                    if (other["status"] == "pending" and other.get("app") == r["app"]
                             and host_allowed(other["host"], entry["allow"])):
                         other["status"], other["decided"] = "approved", r["decided"]
             self._save(requests)
             return r
+
+    # Screen time
+
+    def limits(self):
+        return {**NO_LIMITS, **self._read_json(self.limits_file, {})}
+
+    def set_limits(self, weekday_minutes, weekend_minutes, opens, closes):
+        """Minutes are ints or None (no limit); opens/closes are "HH:MM" or None (always open)."""
+        for minutes in (weekday_minutes, weekend_minutes):
+            if minutes is not None and not 0 <= minutes <= 24 * 60:
+                raise ValueError("minutes must be between 0 and 1440")
+        if (opens is None) != (closes is None):
+            raise ValueError("set both times, or neither")
+        if opens is not None:
+            if not (CLOCK.match(opens) and CLOCK.match(closes)):
+                raise ValueError("times look like 07:30")
+            if opens >= closes:
+                raise ValueError("the computer must open before it closes")
+        with self.lock:
+            limits = self.limits()
+            limits.update(weekday_minutes=weekday_minutes, weekend_minutes=weekend_minutes,
+                          opens=opens, closes=closes)
+            self._write_json(self.limits_file, limits)
+
+    def _give_time(self, minutes, now=None):
+        """Open the computer for `minutes` more, whatever the limits say. Caller holds the lock."""
+        now = time.time() if now is None else now
+        limits = self.limits()
+        limits["extra_until"] = int(max(now, limits["extra_until"]) + minutes * 60)
+        limits["paused"] = False
+        self._write_json(self.limits_file, limits)
+
+    def give_time(self, minutes, now=None):
+        if not 1 <= minutes <= 240:
+            raise ValueError("between 1 and 240 minutes")
+        with self.lock:
+            self._give_time(minutes, now)
+
+    def set_paused(self, paused):
+        with self.lock:
+            limits = self.limits()
+            limits["paused"] = bool(paused)
+            if paused:
+                limits["extra_until"] = 0
+            self._write_json(self.limits_file, limits)
+
+    def usage(self, day):
+        """Seconds of screen time on `day` (a datetime.date)."""
+        return self._read_json(self.usage_file, {}).get(day.isoformat(), 0)
+
+    def heartbeat(self, active, now=None):
+        """lighthouse-timekeeper reports in; count the time since the last report while unlocked."""
+        now = time.time() if now is None else now
+        with self.lock:
+            if active and self.last_beat is not None and 0 < now - self.last_beat <= HEARTBEAT_GAP:
+                day = datetime.date.fromtimestamp(now).isoformat()
+                usage = self._read_json(self.usage_file, {})
+                usage[day] = round(usage.get(day, 0) + now - self.last_beat)
+                for old in sorted(usage)[:-USAGE_DAYS]:
+                    del usage[old]
+                self._write_json(self.usage_file, usage)
+            self.last_beat = now if active else None
+        return self.screen_time(now)
+
+    def screen_time(self, now=None):
+        """Whether the computer is open now, and why not.
+
+        state: "open" or "locked"; reason: "paused" | "closed" | "used-up" (locked) or None;
+        remaining: seconds until it locks (None if nothing will lock it);
+        opens: "HH:MM" when it opens again (None if a grown-up has to unlock it, or the
+        day's time is used up); used / limit: today's seconds.
+        """
+        now = time.time() if now is None else now
+        limits = self.limits()
+        moment = datetime.datetime.fromtimestamp(now)
+        weekend = moment.weekday() >= 5
+        minutes = limits["weekend_minutes" if weekend else "weekday_minutes"]
+        limit = None if minutes is None else minutes * 60
+        used = self.usage(moment.date())
+        clock = moment.strftime("%H:%M")
+        status = {"used": used, "limit": limit, "opens": None, "remaining": None}
+
+        if limits["paused"]:
+            return {**status, "state": "locked", "reason": "paused"}
+        if now < limits["extra_until"]:
+            return {**status, "state": "open", "reason": None, "remaining": int(limits["extra_until"] - now)}
+        if limits["opens"] and not limits["opens"] <= clock < limits["closes"]:
+            return {**status, "state": "locked", "reason": "closed", "opens": limits["opens"]}
+        if limit is not None and used >= limit:
+            return {**status, "state": "locked", "reason": "used-up"}
+
+        remaining = []
+        if limit is not None:
+            remaining.append(limit - used)
+        if limits["closes"]:
+            h, m = map(int, limits["closes"].split(":"))
+            closes = moment.replace(hour=h, minute=m, second=0, microsecond=0)
+            remaining.append((closes - moment).total_seconds())
+        return {**status, "state": "open", "reason": None,
+                "remaining": int(min(remaining)) if remaining else None}
 
     # Apps
 
@@ -275,6 +413,8 @@ input {{ border:1px solid var(--line); background:var(--bg); color:var(--ink); p
 .chip.fixed {{ padding-right:12px; }}
 .flash {{ background:var(--card); border-left:4px solid var(--primary); padding:10px 14px; margin-bottom:12px; }}
 form {{ margin:0; }}
+label {{ font-weight:600; min-width:13em; }}
+input[type=time] {{ flex:0 1 9em; }}
 </style></head><body><main>{body}</main></body></html>"""
 
 
@@ -350,6 +490,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/api/requests":
             return self.kid_request()
+        if path == "/api/session":
+            return self.kid_session()
         if path == "/login":
             return self.login()
         if not self.signed_in():
@@ -361,18 +503,40 @@ class Handler(BaseHTTPRequestHandler):
             flash = f"That didn't work: {e.args[0] if e.args else e}"
         self.send(HTTPStatus.OK, self.dashboard(flash))
 
-    def kid_request(self):
+    def kid_json(self):
+        """The kid API's JSON body, or None after sending an error."""
         if not self.is_local():
-            return self.send_json(HTTPStatus.FORBIDDEN, {"error": "kid API is local only"})
+            self.send_json(HTTPStatus.FORBIDDEN, {"error": "kid API is local only"})
+            return None
         # JSON only: a web page can't send this cross-origin without a CORS preflight.
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
-            return self.send_json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "JSON only"})
+            self.send_json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "JSON only"})
+            return None
         try:
             data = json.loads(self.body())
-            r = self.store.add_request(str(data["app"]), str(data["url"]))
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": "bad request"})
+            return None
+        return data
+
+    def kid_request(self):
+        if (data := self.kid_json()) is None:
+            return
+        try:
+            if data.get("kind") == "time":
+                r = self.store.add_time_request()
+            else:
+                r = self.store.add_request(str(data["app"]), str(data["url"]))
         except (ValueError, KeyError, TypeError):
             return self.send_json(HTTPStatus.BAD_REQUEST, {"error": "bad request"})
         self.send_json(HTTPStatus.CREATED, {"id": r["id"], "status": r["status"]})
+
+    def kid_session(self):
+        if (data := self.kid_json()) is None:
+            return
+        self.send_json(HTTPStatus.OK, self.store.heartbeat(bool(data.get("active"))))
 
     def login(self):
         token = self.form().get("token", "").strip()
@@ -391,6 +555,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise KeyError("no such request")
             if parts[2] == "approve":
                 self.store.decide(parts[1], True, form.get("domain") or None)
+                if r.get("kind") == "time":
+                    return f"Gave {r['minutes']} more minutes."
                 return f"Allowed {form.get('domain') or suggested_domain(r['host'])}."
             if parts[2] == "deny":
                 self.store.decide(parts[1], False)
@@ -409,6 +575,28 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["apps"]:
             app_id = self.store.add_app(form.get("name", ""), form.get("url", ""))
             return f"Added {self.store.app(app_id)['name']}. It's in the launcher now."
+        if parts == ["time", "limits"]:
+            def minutes(key):
+                value = form.get(key, "").strip()
+                if not value:
+                    return None
+                if not value.isdigit():
+                    raise ValueError("minutes must be a number")
+                return int(value)
+            self.store.set_limits(minutes("weekday_minutes"), minutes("weekend_minutes"),
+                                  form.get("opens", "").strip() or None,
+                                  form.get("closes", "").strip() or None)
+            return "Saved screen time."
+        if parts == ["time", "give"]:
+            minutes = int(form.get("minutes", "0")) if form.get("minutes", "").isdigit() else 0
+            self.store.give_time(minutes)
+            return f"Gave {minutes} more minutes."
+        if parts == ["time", "lock"]:
+            self.store.set_paused(True)
+            return "Locked the computer. It stays locked until you unlock it."
+        if parts == ["time", "unlock"]:
+            self.store.set_paused(False)
+            return "Unlocked the computer."
         raise KeyError("unknown action")
 
     # pages
@@ -434,9 +622,18 @@ class Handler(BaseHTTPRequestHandler):
         if not pending:
             out.append('<p class="muted">Nothing waiting.</p>')
         for r in sorted(pending, key=lambda r: r["created"]):
+            asked = time.strftime("%b %d, %H:%M", time.localtime(r["created"]))
+            if r.get("kind") == "time":
+                out.append(f"""<div class="card">
+  Asking for <strong>{r['minutes']} more minutes</strong> of screen time
+  <div class="muted">asked {esc(asked)}</div>
+  <div class="row">
+    <form method="post" action="/requests/{esc(r['id'])}/approve"><button>Give {r['minutes']} minutes</button></form>
+    <form method="post" action="/requests/{esc(r['id'])}/deny"><button class="quiet">Not now</button></form>
+  </div></div>""")
+                continue
             app_name = apps.get(r["app"], {}).get("name", r["app"])
             domain = suggested_domain(r["host"])
-            asked = time.strftime("%b %d, %H:%M", time.localtime(r["created"]))
             out.append(f"""<div class="card">
   <strong>{esc(app_name)}</strong> wants to open <strong>{esc(r['host'])}</strong>
   <div class="muted">{esc(r['url'])} · asked {esc(asked)}</div>
@@ -446,6 +643,8 @@ class Handler(BaseHTTPRequestHandler):
       <button>Allow {esc(domain)}</button></form>
     <form method="post" action="/requests/{esc(r['id'])}/deny"><button class="quiet">Not now</button></form>
   </div></div>""")
+
+        out.append(self.screen_time_section())
 
         out.append("<h2>Web apps</h2>")
         for a in apps.values():
@@ -474,6 +673,48 @@ class Handler(BaseHTTPRequestHandler):
   <p class="muted">The app can visit the site you enter. Anything else it links to will show up above as a question.</p>
 </form>""")
         return PAGE.format(body="\n".join(out))
+
+    def screen_time_section(self):
+        limits, now = self.store.limits(), self.store.screen_time()
+
+        def mins(seconds):
+            return f"{round(seconds / 60)} min"
+
+        if now["state"] == "locked":
+            state = {"paused": "Locked by a grown-up", "closed": f"Closed until {now['opens']}",
+                     "used-up": "Today's time is used up"}[now["reason"]]
+        elif now["remaining"] is not None:
+            state = f"Open, {mins(now['remaining'])} left"
+        else:
+            state = "Open"
+        used = mins(now["used"]) + (f" of {mins(now['limit'])}" if now["limit"] is not None else "")
+        lock = ('<form method="post" action="/time/unlock"><button>Unlock</button></form>'
+                if limits["paused"] else
+                '<form method="post" action="/time/lock"><button class="quiet">Lock now</button></form>')
+        give = "".join(f"""<form method="post" action="/time/give"><input type="hidden" name="minutes" value="{m}">
+<button>Give {m} more minutes</button></form>""" for m in (15, 30))
+
+        def value(key):
+            return "" if limits[key] is None else esc(limits[key])
+
+        return f"""<h2>Screen time</h2>
+<div class="card">
+  <strong>{esc(state)}</strong> <span class="muted">Used today: {esc(used)}</span>
+  <div class="row">{give}{lock}</div>
+</div>
+<form class="card" method="post" action="/time/limits">
+  <div class="row"><label for="wd">School days (Mon–Fri), minutes</label>
+    <input id="wd" name="weekday_minutes" inputmode="numeric" placeholder="No limit" value="{value('weekday_minutes')}"></div>
+  <div class="row"><label for="we">Weekends, minutes</label>
+    <input id="we" name="weekend_minutes" inputmode="numeric" placeholder="No limit" value="{value('weekend_minutes')}"></div>
+  <div class="row"><label for="op">Open from</label>
+    <input id="op" name="opens" type="time" value="{value('opens')}">
+    <label for="cl">until</label>
+    <input id="cl" name="closes" type="time" value="{value('closes')}"></div>
+  <div class="row"><button>Save</button></div>
+  <p class="muted">Leave a box empty for no limit. Screen time counts while the computer is unlocked.
+  When time is up, the screen locks with a button to ask you for {EXTRA_MINUTES} more minutes.</p>
+</form>"""
 
 
 class DualStackServer(ThreadingHTTPServer):

@@ -1,0 +1,267 @@
+#!/usr/bin/python3
+"""Screen time for the kid's session: warns before time runs out, then locks.
+
+Every 30 seconds it tells lighthouse-parent whether the screen is unlocked
+(POST /api/session), which counts screen time and answers whether the computer
+should be open. When it should not, it locks the session with the Wayland
+session-lock protocol: the compositor then shows only this screen, takes all
+input, and stays locked even if this program dies. The lock screen says why
+(time used up, outside open hours, or a grown-up locked it), can ask a grown-up
+for more time, and can turn the computer off. It unlocks when lighthouse-parent
+says the computer is open again.
+
+If lighthouse-parent can't be reached, the computer stays open: a broken
+service must not shut a kid out.
+
+    lighthouse-timekeeper              run (spawned by niri at startup)
+    lighthouse-timekeeper --preview R  show the lock screen for reason R
+                                       (used-up, closed, paused) in a normal window
+"""
+
+import argparse
+import datetime
+import json
+import os
+import subprocess
+import sys
+import syslog
+import urllib.request
+from urllib.parse import quote
+
+PARENT_URL = os.environ.get("LIGHTHOUSE_PARENT_URL", "http://127.0.0.1:8080")
+THEME = "/etc/lighthouse/theme/theme.json"
+LAYER_SHELL = "/usr/lib64/libgtk4-layer-shell.so.0"
+INTERVAL = 30            # seconds between reports
+WARNINGS = (5 * 60, 60)  # warn when this many seconds are left
+
+DEFAULT_COLORS = {"surface": "#F7F9F4", "on_surface": "#1C2733", "surface_variant": "#E2EBF3",
+                  "on_surface_variant": "#27384A", "primary": "#2A64A8", "on_primary": "#FFFFFF",
+                  "secondary": "#2C7340", "outline": "#6F7F8F"}
+
+
+def post(path, body):
+    req = urllib.request.Request(f"{PARENT_URL}{path}", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return json.load(r)
+    except (OSError, ValueError):
+        return None
+
+
+def request_status(request_id):
+    try:
+        with urllib.request.urlopen(f"{PARENT_URL}/api/requests/{quote(request_id)}", timeout=3) as r:
+            return json.load(r).get("status")
+    except (OSError, ValueError):
+        return None
+
+
+def lock_text(status):
+    """(emoji, heading, detail) for the lock screen."""
+    reason = status.get("reason")
+    if reason == "closed":
+        opens = status.get("opens")
+        return "🌙", "The computer is resting", f"It opens again at {opens}." if opens else ""
+    if reason == "paused":
+        return "🙂", "A grown-up paused the computer", "It opens again when they unlock it."
+    return "⏰", "That's all the screen time for today", "You can play again tomorrow."
+
+
+def warning_text(seconds):
+    minutes = max(1, round(seconds / 60))
+    return f"{minutes} minute{'s' if minutes != 1 else ''} of screen time left"
+
+
+def load_colors():
+    try:
+        with open(THEME) as f:
+            return {**DEFAULT_COLORS, **json.load(f)["colors"]}
+    except (OSError, ValueError, KeyError):
+        return dict(DEFAULT_COLORS)
+
+
+CSS = """
+.lock {{ background: {surface}; color: {on_surface}; }}
+.big {{ font-size: 96px; }}
+.title {{ font-size: 40px; font-weight: 800; }}
+.detail {{ font-size: 22px; color: {on_surface_variant}; }}
+.clock {{ font-size: 28px; font-weight: 700; color: {on_surface_variant}; }}
+.ask {{ font-size: 22px; font-weight: 800; border-radius: 999px; padding: 14px 28px;
+       background: {primary}; color: {on_primary}; }}
+.quiet {{ font-size: 16px; border-radius: 999px; padding: 8px 20px;
+         background: {surface_variant}; color: {on_surface_variant}; }}
+button:focus-visible {{ outline: 4px solid {secondary}; outline-offset: 3px; }}
+"""
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--preview", choices=("used-up", "closed", "paused"))
+    args = parser.parse_args()
+
+    # gtk4-layer-shell must load before libwayland, which Python can't arrange by itself.
+    if not args.preview and LAYER_SHELL not in os.environ.get("LD_PRELOAD", ""):
+        os.environ["LD_PRELOAD"] = ":".join(filter(None, [LAYER_SHELL, os.environ.get("LD_PRELOAD")]))
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+
+    import gi
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Gtk4SessionLock", "1.0")
+    from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4SessionLock
+
+    app = Gtk.Application(application_id="org.lighthouse.Timekeeper",
+                          flags=Gio.ApplicationFlags.NON_UNIQUE)
+    state = {"status": {"state": "open"}, "warned": set(), "request": None, "screens": []}
+    lock = None if args.preview else Gtk4SessionLock.Instance.new()
+
+    # niri discards the output of what it spawns, so log to the journal too.
+    syslog.openlog("lighthouse-timekeeper")
+
+    def log(message):
+        print(f"lighthouse-timekeeper: {message}", file=sys.stderr, flush=True)
+        syslog.syslog(message)
+
+    def notify(body):
+        try:
+            Gio.DBusProxy.new_for_bus_sync(
+                Gio.BusType.SESSION, Gio.DBusProxyFlags.NONE, None, "org.freedesktop.Notifications",
+                "/org/freedesktop/Notifications", "org.freedesktop.Notifications", None,
+            ).call_sync("Notify", GLib.Variant("(susssasa{sv}i)", (
+                "Lighthouse", 0, "alarm-symbolic", "Screen time", body, [], {}, 10000)),
+                Gio.DBusCallFlags.NONE, 3000, None)
+        except GLib.Error as e:
+            log(f"couldn't show a notification: {e.message}")
+
+    # The lock screen: one per monitor, all showing the same thing.
+
+    def build_screen():
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16,
+                      halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+        widgets = {name: Gtk.Label(css_classes=[name], wrap=True, justify=Gtk.Justification.CENTER)
+                   for name in ("clock", "big", "title", "detail", "note")}
+        widgets["note"].add_css_class("detail")
+        for name in ("clock", "big", "title", "detail"):
+            box.append(widgets[name])
+        ask = Gtk.Button(label="🙋 Ask a grown-up for more time", css_classes=["ask"],
+                         halign=Gtk.Align.CENTER, margin_top=16)
+        ask.connect("clicked", lambda _b: ask_for_time())
+        box.append(ask)
+        box.append(widgets["note"])
+        # Click or tap only, twice: mashing keys or a stray click doesn't turn it off.
+        off = Gtk.Button(label="Turn off the computer", css_classes=["quiet"],
+                         halign=Gtk.Align.CENTER, margin_top=32, focusable=False)
+
+        def turn_off(button):
+            if button.get_label() == "Turn off the computer":
+                button.set_label("Press again to turn off")
+                GLib.timeout_add_seconds(5, lambda: button.set_label("Turn off the computer") and False)
+            elif args.preview:
+                log("preview: would turn off")
+            else:
+                subprocess.Popen(["systemctl", "poweroff"])
+        off.connect("clicked", turn_off)
+        box.append(off)
+        widgets["ask"] = ask
+        return box, widgets
+
+    def refresh_screens():
+        emoji, title, detail = lock_text(state["status"])
+        asked = state["request"]
+        for widgets in state["screens"]:
+            widgets["clock"].set_label(datetime.datetime.now().strftime("%H:%M"))
+            widgets["big"].set_label(emoji)
+            widgets["title"].set_label(title)
+            widgets["detail"].set_label(detail)
+            widgets["detail"].set_visible(bool(detail))
+            # A grown-up who locked the computer on purpose doesn't get asked.
+            can_ask = state["status"].get("reason") != "paused"
+            widgets["ask"].set_visible(can_ask and asked is None)
+            note = {None: "", "pending": "💌 You asked! It unlocks by itself if a grown-up says yes.",
+                    "denied": "A grown-up said not this time.",
+                    "offline": "Couldn't send your question. Ask a grown-up in person."}.get(asked, "")
+            widgets["note"].set_label(note)
+            widgets["note"].set_visible(can_ask and bool(note))
+
+    def on_monitor(_lock, monitor):
+        window = Gtk.Window(css_classes=["lock"])
+        box, widgets = build_screen()
+        window.set_child(box)
+        state["screens"].append(widgets)
+        window.connect("destroy", lambda _w: state["screens"].remove(widgets))
+        lock.assign_window_to_monitor(window, monitor)
+        window.present()
+        refresh_screens()
+        widgets["ask"].grab_focus()  # Enter asks
+
+    def ask_for_time():
+        r = None if args.preview else post("/api/requests", {"kind": "time"})
+        state["request"] = "pending" if r else "offline"
+        state["request_id"] = r["id"] if r else None
+        refresh_screens()
+
+    # The loop.
+
+    def tick():
+        locked = lock.is_locked()
+        status = post("/api/session", {"active": not locked})
+        if status is None:
+            if locked:
+                log("lighthouse-parent unreachable; unlocking")
+                lock.unlock()
+            return GLib.SOURCE_CONTINUE
+        state["status"] = status
+
+        if status["state"] == "locked" and not locked:
+            log(f"locking ({status.get('reason')})")
+            state["request"] = None
+            lock.lock()
+        elif status["state"] == "open" and locked:
+            log("unlocking")
+            lock.unlock()
+            state["warned"].clear()
+        elif locked and state["request"] == "pending" and state.get("request_id"):
+            if request_status(state["request_id"]) == "denied":
+                state["request"] = "denied"
+
+        remaining = status.get("remaining")
+        if status["state"] == "open" and remaining is not None:
+            for threshold in WARNINGS:
+                if remaining <= threshold and threshold not in state["warned"]:
+                    state["warned"].update(t for t in WARNINGS if t >= threshold)
+                    log(f"warning: {warning_text(remaining)}")
+                    notify(warning_text(remaining))
+                    break
+        elif status["state"] == "open":
+            state["warned"].clear()
+        refresh_screens()
+        return GLib.SOURCE_CONTINUE
+
+    def on_activate(_app):
+        provider = Gtk.CssProvider()
+        provider.load_from_string(CSS.format(**load_colors()))
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        app.hold()
+        if args.preview:
+            state["status"] = {"state": "locked", "reason": args.preview, "opens": "07:00"}
+            window = Gtk.ApplicationWindow(application=app, css_classes=["lock"], title="Lock screen preview")
+            box, widgets = build_screen()
+            window.set_child(box)
+            state["screens"].append(widgets)
+            refresh_screens()
+            window.present()
+            return
+        if not Gtk4SessionLock.is_supported():
+            log("the compositor doesn't support session locking; screen time can't be enforced")
+        lock.connect("monitor", on_monitor)
+        lock.connect("failed", lambda _l: log("couldn't lock the session"))
+        tick()
+        GLib.timeout_add_seconds(INTERVAL, tick)
+
+    app.connect("activate", on_activate)
+    return app.run([sys.argv[0]])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

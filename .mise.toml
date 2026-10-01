@@ -91,6 +91,7 @@ echo "==> lighthouse-webapp, lighthouse-theme and lighthouse-parent tests"
 podman run --rm \
   -v {{config_root}}/rootfs/usr/bin/lighthouse-parent:/usr/bin/lighthouse-parent:ro \
   -v {{config_root}}/rootfs/usr/bin/lighthouse-webapp:/usr/bin/lighthouse-webapp:ro \
+  -v {{config_root}}/rootfs/usr/bin/lighthouse-timekeeper:/usr/bin/lighthouse-timekeeper:ro \
   -v {{config_root}}/rootfs/usr/bin/lighthouse-theme:/usr/bin/lighthouse-theme:ro \
   -v {{config_root}}/rootfs/usr/share/lighthouse:/usr/share/lighthouse:ro \
   -v {{config_root}}/tests:/tests:ro \

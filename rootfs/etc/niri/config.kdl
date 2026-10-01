@@ -18,6 +18,8 @@ environment {
 }
 
 spawn-at-startup "noctalia"
+// Screen time: locks the session when time is up. Restarted if it ever exits.
+spawn-sh-at-startup "while :; do lighthouse-timekeeper; sleep 5; done"
 
 input {
     keyboard {

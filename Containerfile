@@ -26,11 +26,13 @@ RUN dnf5 -y --setopt=timeout=60 install \
     dbus-daemon \
     && dnf5 clean all
 
-# 2. Runtimes: lighthouse-webapp (Blink via QtWebEngine) and the GTK theme picker
+# 2. Runtimes: lighthouse-webapp (Blink via QtWebEngine), the GTK theme picker,
+#    and lighthouse-timekeeper's lock screen (Wayland session lock)
 RUN dnf5 -y --setopt=timeout=60 install \
     python3-pyside6 \
     python3-gobject \
     gtk4 \
+    gtk4-layer-shell \
     && dnf5 clean all
 
 # 3. Laptop hardware: Wi-Fi, audio firmware, power profiles, backlight

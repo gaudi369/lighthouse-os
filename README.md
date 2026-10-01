@@ -32,7 +32,8 @@ GCompris are placeholders.
 | Shell | Noctalia v5 (bar and launcher), config in `rootfs/etc/lighthouse/noctalia/` via `NOCTALIA_CONFIG_HOME` |
 | Web apps | `lighthouse-webapp`: Chromium's Blink engine through QtWebEngine (PySide6), one desktop entry per site |
 | Themes | `themes/*.toml` → `scripts/gen-themes.py` → Noctalia palette, niri colours, wallpaper; `lighthouse-theme` switches |
-| Parent service | `lighthouse-parent` on port 8080: kid requests in, parent approvals out; runs as its own `lighthouse` user |
+| Parent service | `lighthouse-parent` on port 8080: kid requests in, parent approvals out, screen time; runs as its own `lighthouse` user |
+| Screen time | `lighthouse-timekeeper` in the kid's session reports to `lighthouse-parent` every 30 s and locks the session (Wayland session lock, via gtk4-layer-shell) when time is up |
 | Accounts | `kid` has no password and no sudo; `admin` uses an SSH key only |
 | Laptops | Wi-Fi, audio firmware, power profiles, Bluetooth, backlight; unattended installer ISO |
 
@@ -144,6 +145,25 @@ The kid-side API only accepts JSON from the computer itself; everything
 else needs the parent code. It is plain HTTP on the local network for now
 (Tailscale comes later), so use it on a network you trust.
 
+- **Screen time**: a daily limit for school days and for weekends, the hours
+  the computer is open, **Give 15/30 more minutes**, and **Lock now**. Empty
+  boxes mean no limit, which is the default.
+
+#### Screen time
+
+Time counts while the kid's screen is unlocked; time while it's locked or the
+laptop is asleep doesn't. Five minutes and one minute before it locks, a
+notification says how much is left. Then the session locks with a screen that
+says why ("That's all the screen time for today", "The computer is resting"
+outside open hours, or "A grown-up paused the computer"), with **Ask a
+grown-up for more time** and **Turn off the computer**. Asking shows up under
+**Asking to visit** as a request for 15 more minutes; allowing it unlocks the
+computer within 30 seconds.
+
+More time always wins over the limit and the open hours, and **Lock now**
+wins over everything until you unlock it. If `lighthouse-parent` isn't
+running, the computer stays open rather than locking a kid out.
+
 #### What the kid can't change
 
 - **Noctalia's settings.** Its settings window can add plugins (which run
@@ -178,8 +198,8 @@ Most work doesn't need a VM. Pick the fastest loop that covers your change:
 | Task | What it does | Use it for |
 |---|---|---|
 | `mise run build` | Build the container image | Package changes |
-| `mise run check` | Validate niri and Noctalia config, Chromium policy, desktop entries and themes; unit tests for the web app allowlist and link routing, `lighthouse-theme` and `lighthouse-parent` | Every change |
-| `mise run app -- pbskids` | Open one app in a normal window on your desktop; blocked navigations print in the terminal. Also `pbskids@<url>`, `chromium [url]` (kid policy, with an address bar), or any desktop entry like `tuxpaint` | Trying and exploring apps |
+| `mise run check` | Validate niri and Noctalia config, Chromium policy, desktop entries and themes; unit tests for the web app allowlist and link routing, `lighthouse-theme` and `lighthouse-parent` (including screen time) | Every change |
+| `mise run app -- pbskids` | Open one app in a normal window on your desktop; blocked navigations print in the terminal. Also `pbskids@<url>`, `chromium [url]` (kid policy, with an address bar), `lockscreen [used-up\|closed\|paused]` (the screen time lock screen in a window), or any desktop entry like `tuxpaint` | Trying and exploring apps |
 | `mise run parent` | Run the parent service on your computer (state in `build/parent-state`); open http://localhost:8080 with the printed code. `mise run app` in another terminal talks to it, so you can ask and approve end to end | Parent page and the ask flow |
 | `mise run dev` | Run the whole kid session in a window on your desktop | Shell, keybindings, layout |
 | `mise run test` | Browser tests, headless and offline: allowlist (navigation, redirects, frames, lookalike domains, file URLs, downloads), the ask page, a parent approving through the real service, and the Chromium policy. Saves `build/shots/ask-a-grown-up.png` | Web app, parent or policy changes |
@@ -205,6 +225,7 @@ any of them. `IMAGE_TAG=<tag>` builds or uses a different image tag.
 | Anything | `mise run check` first (seconds) |
 | A web app, its allowlist, or `lighthouse-webapp` | `mise run app -- <id>` to click around, then `mise run test` |
 | The ask flow or the parent page | `mise run parent` + `mise run app -- <id>`, then `mise run check` and `mise run test` |
+| Screen time or the lock screen | `mise run check`; `mise run app -- lockscreen` for the look; `mise run vm-sync -- --session` and the parent page to see it lock |
 | A theme | `LIGHTHOUSE_THEME=<id> mise run app -- pbskids`, then `mise run themes` |
 | niri config, shortcuts, the bar or launcher | `mise run dev` (Mod is Alt there), or `mise run shot` without a window |
 | Packages in the `Containerfile` | `mise run build`, then any of the above |
@@ -225,7 +246,7 @@ a laptop you intend to wipe. It installs `kid` (autologin) and `admin`
 | 1. One scrolling strip | niri strip, full-width apps, Mod+R half width, shortcuts overlay, no terminal or general browser in the launcher; Noctalia settings, lock and log out out of reach; hot corners off | Keep kids to one workspace (niri still has vertical workspace swipes); check touchpad gestures on real hardware; a friendlier launcher |
 | 2. Web sites are apps | `lighthouse-webapp` on Blink with per-app allowlists, storage and window ids; toolbar; "Ask a grown-up" page for blocked links; offline tests | Launcher icons (once the app list is decided); one window per app (opening twice gives two); video playback checked |
 | 3. Fully themeable | Eight themes with contrast checks; bar, focus ring, wallpaper, web app toolbars and picker follow the theme; kid picker with parent lock | Theme GTK/Qt apps (Tux Paint, GCompris, dialogs); confirm live switching in the VM |
-| 4. Parent control plane | Parent web page: approve or deny the kid's requests, edit each app's allowed sites, add web apps; parent code sign-in; commands over SSH | Time limits and activity; notifying parents of new requests; Tailscale setup flow (and serving only on Tailscale); HTTPS |
+| 4. Parent control plane | Parent web page: approve or deny the kid's requests, edit each app's allowed sites, add web apps; screen time (daily limits, open hours, more time, lock now) with a kid lock screen that can ask for more; parent code sign-in; commands over SSH | Activity (which apps, for how long; the per-day usage is already kept in `usage.json`); notifying parents of new requests; Tailscale setup flow (and serving only on Tailscale); HTTPS |
 | 5. Works out of the box | Immutable bootc image, autologin, no admin rights for the kid, laptop hardware support, unattended installer | Publish the image to a registry and turn on automatic updates; real-hardware testing; a first-boot setup for the parent (admin key, Wi-Fi, Tailscale) instead of the dev SSH key |
 
 Known issues and open questions:
