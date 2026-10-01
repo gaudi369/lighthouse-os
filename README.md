@@ -210,6 +210,9 @@ Most work doesn't need a VM. Pick the fastest loop that covers your change:
 | `mise run vm-update` | Build, push to a local registry (`lighthouse-registry` on 127.0.0.1:5000) and `bootc upgrade` the running VM onto it; reboots it. The first run switches the VM to the registry and downloads every layer; later runs only changed layers | Testing a new image in the VM |
 | `mise run vm-sync` | Copy `rootfs/` into the running VM over SSH in seconds; `-- --session` restarts the kid session. `/usr` changes last until the VM reboots; the VM's theme choice is kept | Quick config checks in the VM |
 | `mise run ssh` | SSH into the VM as `admin` | Debugging the VM |
+| `mise run vm-test` | End-to-end tests in a headless test VM: builds, boots or reuses the test VM, updates it to the build, then acts as the kid (clicks and keys) and the parent (the parent page). Covers the session, the kid's account, terminals, VT logins, Noctalia settings, link routing and screen time. Screenshots in `build/vm-test/shots/`; `-- -k <name>` runs one test | Before calling anything done; after package, service or session changes |
+| `mise run vm-start` / `vm-stop` | Boot or shut down the headless test VM (SSH on 2223, parent page on 8081). It has its own copy of `build/qcow2/disk.qcow2` (`-- --fresh` makes a new one), so it can run alongside `mise run launch` | Driving the VM by hand or from Claude |
+| `mise run vm-ctl -- <cmd>` | Drive the test VM: `shot [name]`, `click X Y [middle\|right]`, `key super-space`, `type text`, `ssh <command>` | Looking at or poking the VM without a window |
 | `mise run iso` | Build the unattended laptop installer (needs sudo) | Installing on real hardware |
 | `mise run iso-test` | Install from the ISO onto an empty disk in a UEFI VM, then boot it | Testing the installer |
 
@@ -225,12 +228,12 @@ any of them. `IMAGE_TAG=<tag>` builds or uses a different image tag.
 | Anything | `mise run check` first (seconds) |
 | A web app, its allowlist, or `lighthouse-webapp` | `mise run app -- <id>` to click around, then `mise run test` |
 | The ask flow or the parent page | `mise run parent` + `mise run app -- <id>`, then `mise run check` and `mise run test` |
-| Screen time or the lock screen | `mise run check`; `mise run app -- lockscreen` for the look; `mise run vm-sync -- --session` and the parent page to see it lock |
+| Screen time or the lock screen | `mise run check`; `mise run app -- lockscreen` for the look; `mise run vm-test -- -k time` to see it lock and unlock |
 | A theme | `LIGHTHOUSE_THEME=<id> mise run app -- pbskids`, then `mise run themes` |
 | niri config, shortcuts, the bar or launcher | `mise run dev` (Mod is Alt there), or `mise run shot` without a window |
 | Packages in the `Containerfile` | `mise run build`, then any of the above |
 | Services, polkit, greetd, boot-time behaviour | `mise run vm-sync` for a quick try, then `mise run vm-update` |
-| Anything before calling it done | `mise run vm-update` and a look in the VM |
+| Anything before calling it done | `mise run vm-test`, then a look at `build/vm-test/shots/` |
 | Accounts, disk layout, `config.toml.in` | `mise run disk` (the only time a full disk build is needed) |
 | The installer | `mise run iso` + `mise run iso-test` |
 
@@ -251,6 +254,12 @@ a laptop you intend to wipe. It installs `kid` (autologin) and `admin`
 
 Known issues and open questions:
 
+- `mise run vm-test` checks the disk image's accounts, not the installer's.
+  The installer's kickstart also creates `kid` without a password (locked),
+  but `mise run iso-test` doesn't check that yet.
+- The test VM renders through a virtual GPU (niri won't use a software
+  renderer), so screenshots come from QEMU's VNC server rather than its
+  screendump command. CI runners need KVM and a render node (`/dev/dri`).
 - `niri-session` starts through the kid's login shell, which reads
   `~/.bash_profile`. The kid has no way to write files there today, but if an
   app ever gains one, that is a way in.

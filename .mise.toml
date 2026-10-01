@@ -129,6 +129,26 @@ description = "Copy rootfs/ into the running VM over SSH (seconds; /usr changes 
 run = '{{config_root}}/scripts/vm.sh sync "$@"'
 
 # ------------------------------------------------------------------------------
+# Headless test VM: end-to-end tests, and a VM that Claude (or CI) can drive
+# ------------------------------------------------------------------------------
+[tasks.vm-test]
+description = "End-to-end tests in a headless VM: build, update the test VM to it, act as kid and parent; screenshots in build/vm-test/shots"
+depends = ["build"]
+run = '{{config_root}}/scripts/vm-test.sh "$@"'
+
+[tasks.vm-start]
+description = "Boot the headless test VM (SSH 2223, parent page 8081); -- --fresh starts again from build/qcow2/disk.qcow2"
+run = '{{config_root}}/scripts/vmctl.py start "$@"'
+
+[tasks.vm-stop]
+description = "Shut down the headless test VM"
+run = "{{config_root}}/scripts/vmctl.py stop"
+
+[tasks.vm-ctl]
+description = "Drive the headless test VM: shot [name], click X Y [button], key COMBO, type TEXT, ssh CMD"
+run = '{{config_root}}/scripts/vmctl.py "$@"'
+
+# ------------------------------------------------------------------------------
 # 3. Launch: Interactive VM with Surface hardware acceleration
 # ------------------------------------------------------------------------------
 [tasks.launch]
