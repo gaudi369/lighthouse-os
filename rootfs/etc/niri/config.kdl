@@ -1,5 +1,5 @@
-// System-wide niri config. niri reads ~/.config/niri/config.kdl first,
-// then falls back to this file, so the kid account must not have its own.
+// System-wide niri config. niri would read ~/.config/niri/config.kdl first;
+// NIRI_CONFIG (/usr/lib/environment.d/60-lighthouse.conf) pins it to this file.
 
 prefer-no-csd
 
@@ -9,6 +9,9 @@ hotkey-overlay {
 
 environment {
     NOCTALIA_CONFIG_HOME "/etc/lighthouse"
+    // Read-only: settings changed in Noctalia can't be saved, so they don't apply.
+    NOCTALIA_STATE_HOME "/usr/share/lighthouse/noctalia-readonly"
+    NOCTALIA_DATA_HOME "/usr/share/lighthouse/noctalia-readonly"
     XDG_SESSION_TYPE "wayland"
     // Web apps a parent added or changed (lighthouse-parent) come first.
     XDG_DATA_DIRS "/var/lib/lighthouse/apps:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
@@ -60,6 +63,14 @@ window-rule {
 window-rule {
     match app-id="^TuxPaint"
     open-floating false
+}
+
+// The top-left hot corner would open the overview, where windows can be
+// dragged between workspaces.
+gestures {
+    hot-corners {
+        off
+    }
 }
 
 layer-rule {

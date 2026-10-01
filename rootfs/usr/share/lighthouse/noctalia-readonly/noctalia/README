@@ -1,0 +1,5 @@
+Noctalia's state and data directory for the kid's session (NOCTALIA_STATE_HOME
+and NOCTALIA_DATA_HOME, set in /etc/niri/config.kdl). It is read-only on
+purpose: Noctalia applies a settings change only after saving it here, so
+nothing the kid does in Noctalia's settings window takes effect, and no
+plugin can be installed.

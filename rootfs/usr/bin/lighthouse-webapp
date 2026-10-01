@@ -16,6 +16,11 @@ else is blocked and logged to stderr. A blocked page shows "Ask a grown-up",
 which sends a request to lighthouse-parent and opens the page once it's allowed.
 Each app gets its own storage and its own Wayland app id. The chromium engine runs Chromium itself, where only the global
 managed policy applies.
+
+    lighthouse-webapp --open <url>
+
+is the system's handler for web links from other programs (lighthouse-open-url.desktop):
+it opens the link in the first web app whose allowlist covers it, or nowhere.
 """
 
 import argparse
@@ -91,6 +96,25 @@ class App:
             return False
         host = (parts.hostname or "").lower()
         return any(host == d or host.endswith("." + d) for d in self.allow)
+
+
+def app_for_url(url):
+    """The id of the first web app whose allowlist covers `url`, or None."""
+    seen = set()
+    for d in APP_DIRS:
+        for path in sorted(d.glob("*.desktop")):
+            if path.stem in seen:
+                continue
+            seen.add(path.stem)
+            _, entry = find_desktop_entry(path.stem)
+            if entry is None or "X-Lighthouse-Url" not in entry:
+                continue
+            app = object.__new__(App)
+            app.id = path.stem
+            app.load_allow(entry)
+            if app.allows(url) and urlsplit(url).scheme in ("http", "https"):
+                return app.id
+    return None
 
 
 def blocked(app, what):
@@ -370,9 +394,19 @@ def run_blink(app, url):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("app_id", help="desktop entry id, e.g. pbskids")
+    parser.add_argument("app_id", nargs="?", help="desktop entry id, e.g. pbskids")
     parser.add_argument("--url", help="start at this URL instead (must be allowed)")
+    parser.add_argument("--open", metavar="URL", help="open a link from another program in its web app")
     args = parser.parse_args()
+
+    if args.open:
+        app_id = app_for_url(args.open)
+        if app_id is None:
+            print(f"lighthouse-webapp: no web app for {args.open}", file=sys.stderr)
+            return 1
+        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__), app_id, "--url", args.open])
+    if not args.app_id:
+        parser.error("an app id is needed")
 
     app = App(args.app_id)
     url = args.url or app.url

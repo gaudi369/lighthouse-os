@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Open in a web app
+Comment=Opens web links from other programs in the web app that allows them
+Exec=lighthouse-webapp --open %u
+Type=Application
+NoDisplay=true
+Terminal=false
+MimeType=x-scheme-handler/http;x-scheme-handler/https;

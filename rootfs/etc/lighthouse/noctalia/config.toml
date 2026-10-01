@@ -18,3 +18,39 @@ telemetry_enabled    = false
 # The kid account has no password, so there is no keyring to unlock at login.
 key_source = "file"
 key_file   = "~/.local/state/noctalia/storage.key"
+
+# --- Keeping the kid out of Noctalia's settings ------------------------------
+# Settings can add plugins (which run shell commands) and bind commands to the
+# bar. NOCTALIA_STATE_HOME and NOCTALIA_DATA_HOME (set in /etc/niri/config.kdl)
+# point at read-only directories, and Noctalia only applies a settings change
+# once it has saved it, so the settings window can't change anything. These
+# bindings also take away the clicks that lead there.
+
+# Middle click on any widget opens its settings; right click opens the control
+# center, which has a settings button.
+[bar.default.actions]
+middle = "none"
+right  = "none"
+
+[bar.default.dead_zone.actions]
+left   = "none"
+middle = "none"
+right  = "none"
+
+# Each of these opens the control center by default.
+[widget.clock.actions]
+left = "none"
+
+[widget.battery.actions]
+left = "none"
+
+[widget.volume.actions]
+left = "none"
+
+# Lock and log out would strand a kid who has no password.
+[[shell.session.actions]]
+action = "reboot"
+
+[[shell.session.actions]]
+action = "shutdown"
+variant = "destructive"

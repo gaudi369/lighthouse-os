@@ -1,0 +1,6 @@
+# Web links from other programs open in the matching web app, never in a
+# general browser. The kid's own ~/.config/mimeapps.list would come first, but
+# the kid has no way to write it.
+[Default Applications]
+x-scheme-handler/http=lighthouse-open-url.desktop
+x-scheme-handler/https=lighthouse-open-url.desktop

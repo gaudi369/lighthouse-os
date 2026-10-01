@@ -144,6 +144,24 @@ The kid-side API only accepts JSON from the computer itself; everything
 else needs the parent code. It is plain HTTP on the local network for now
 (Tailscale comes later), so use it on a network you trust.
 
+#### What the kid can't change
+
+- **Noctalia's settings.** Its settings window can add plugins (which run
+  commands) and bind commands to the bar, and a kid can reach it from the
+  control center or the launcher's `/pan`. Noctalia only applies a settings
+  change after saving it, and its state and data directories
+  (`NOCTALIA_STATE_HOME`, `NOCTALIA_DATA_HOME`) point at a read-only
+  directory, so nothing changed there takes effect. The bar's middle and
+  right clicks, which open settings and the control center, are turned off.
+- **The session menu** offers only Restart and Shut down: Lock and Log out
+  would leave a kid with no password at a login prompt.
+- **Web links from other programs** (`x-scheme-handler/http(s)`) go to
+  `lighthouse-webapp --open`, which opens them in the web app whose allowlist
+  covers them, or nowhere. Chromium no longer handles links.
+- **niri's config** is pinned with `NIRI_CONFIG`, so a file in the kid's home
+  can't replace it. Hot corners (which open the overview) are off, and there
+  are no login prompts on other virtual terminals.
+
 Over SSH as `admin` (`mise run ssh` for the VM):
 
 | Command | Does |
@@ -160,7 +178,7 @@ Most work doesn't need a VM. Pick the fastest loop that covers your change:
 | Task | What it does | Use it for |
 |---|---|---|
 | `mise run build` | Build the container image | Package changes |
-| `mise run check` | Validate niri config, Chromium policy, desktop entries and themes; unit tests for the web app allowlist, `lighthouse-theme` and `lighthouse-parent` | Every change |
+| `mise run check` | Validate niri and Noctalia config, Chromium policy, desktop entries and themes; unit tests for the web app allowlist and link routing, `lighthouse-theme` and `lighthouse-parent` | Every change |
 | `mise run app -- pbskids` | Open one app in a normal window on your desktop; blocked navigations print in the terminal. Also `pbskids@<url>`, `chromium [url]` (kid policy, with an address bar), or any desktop entry like `tuxpaint` | Trying and exploring apps |
 | `mise run parent` | Run the parent service on your computer (state in `build/parent-state`); open http://localhost:8080 with the printed code. `mise run app` in another terminal talks to it, so you can ask and approve end to end | Parent page and the ask flow |
 | `mise run dev` | Run the whole kid session in a window on your desktop | Shell, keybindings, layout |
@@ -204,13 +222,19 @@ a laptop you intend to wipe. It installs `kid` (autologin) and `admin`
 
 | Goal | Done | Still to do |
 |---|---|---|
-| 1. One scrolling strip | niri strip, full-width apps, Mod+R half width, shortcuts overlay, no terminal or general browser in the launcher | Keep kids to one workspace (niri still has vertical workspace swipes); check touchpad gestures on real hardware; a friendlier launcher |
+| 1. One scrolling strip | niri strip, full-width apps, Mod+R half width, shortcuts overlay, no terminal or general browser in the launcher; Noctalia settings, lock and log out out of reach; hot corners off | Keep kids to one workspace (niri still has vertical workspace swipes); check touchpad gestures on real hardware; a friendlier launcher |
 | 2. Web sites are apps | `lighthouse-webapp` on Blink with per-app allowlists, storage and window ids; toolbar; "Ask a grown-up" page for blocked links; offline tests | Launcher icons (once the app list is decided); one window per app (opening twice gives two); video playback checked |
 | 3. Fully themeable | Eight themes with contrast checks; bar, focus ring, wallpaper, web app toolbars and picker follow the theme; kid picker with parent lock | Theme GTK/Qt apps (Tux Paint, GCompris, dialogs); confirm live switching in the VM |
 | 4. Parent control plane | Parent web page: approve or deny the kid's requests, edit each app's allowed sites, add web apps; parent code sign-in; commands over SSH | Time limits and activity; notifying parents of new requests; Tailscale setup flow (and serving only on Tailscale); HTTPS |
 | 5. Works out of the box | Immutable bootc image, autologin, no admin rights for the kid, laptop hardware support, unattended installer | Publish the image to a registry and turn on automatic updates; real-hardware testing; a first-boot setup for the parent (admin key, Wi-Fi, Tailscale) instead of the dev SSH key |
 
 Known issues and open questions:
+
+- `niri-session` starts through the kid's login shell, which reads
+  `~/.bash_profile`. The kid has no way to write files there today, but if an
+  app ever gains one, that is a way in.
+- Flatpak is installed with no remotes, for later. Nothing the kid can reach
+  runs it.
 
 - The disk build used to print `blueprint validation failed ...
   customizations.filesystem` (an `fstype` key the builder doesn't accept);
