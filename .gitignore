@@ -36,3 +36,7 @@ id_rsa*
 *.swo
 *~
 .DS_Store
+
+# Python bytecode (rootfs/ is copied into the image as-is)
+__pycache__/
+*.pyc
