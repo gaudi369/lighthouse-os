@@ -1,0 +1,10 @@
+// The kid's session connects to Wi-Fi: lighthouse-timekeeper's first-boot setup
+// screen does it with nmcli. NetworkManager only lets admins add system-wide
+// networks, which connect at boot. The kid has no terminal or settings app,
+// so this is reachable only through Lighthouse's own screens.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.NetworkManager.settings.modify.system" &&
+        subject.user == "kid" && subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

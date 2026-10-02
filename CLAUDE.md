@@ -10,7 +10,8 @@ you need rather than the whole file.
 - `Containerfile`: packages and image setup. `rootfs/` is copied over the image as-is.
 - `rootfs/usr/bin/lighthouse-*`: the Lighthouse programs (Python, no packaging):
   `webapp` (Blink web apps, allowlists, link routing), `parent` (parent web page
-  and kid API on :8080, screen time), `timekeeper` (kid session: screen time lock),
+  and kid API on :8080, screen time, the parent passphrase), `timekeeper` (kid
+  session: screen time lock and the first-boot setup screen),
   `theme` / `themes` (theme switching and the kid's picker).
 - `rootfs/etc/niri/config.kdl`, `rootfs/etc/lighthouse/noctalia/config.toml`: session config.
 - `themes/*.toml` → `scripts/gen-themes.py` → generated files under `rootfs/` (committed).
@@ -30,7 +31,10 @@ You can drive the test VM yourself: `mise run vm-start`, then
 `scripts/vmctl.py shot NAME` (read the PNG), `click X Y [button]`,
 `key super-space`, `type TEXT`, `ssh CMD`. In tests, import `scripts/vmctl.py`.
 Programs niri spawns have their stdout discarded; log to syslog to see them in
-`journalctl -t <name>`. When a new kid-facing behaviour can be checked
+`journalctl -t <name>`. A solid red screen means the session lock's client
+died (niri keeps the screen locked); `WAYLAND_DEBUG=1` shows protocol errors.
+`vmctl.py ssh` runs as admin; the tests' `Kid` class runs commands in the kid's
+session. Tests sign in with `PASSPHRASE`, set over SSH by `lighthouse-parent passphrase`. When a new kid-facing behaviour can be checked
 end to end, add it to tests/vm/test_vm.py.
 
 Package changes need `mise run build` first. Only `disk` and `iso` need sudo

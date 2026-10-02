@@ -5,14 +5,14 @@
 #   scripts/app.sh pbskids                   a web app at its start page
 #   scripts/app.sh pbskids@https://pbskids.org/games
 #   scripts/app.sh chromium [url]            Chromium with the kid policy and an address bar
-#   scripts/app.sh lockscreen [reason]       the screen time lock screen (used-up, closed, paused)
+#   scripts/app.sh lockscreen [reason]       the screen time lock screen (used-up, closed, paused) or first-boot setup (setup)
 #   scripts/app.sh tuxpaint                  any other desktop entry
 set -euo pipefail
 
 source "$(dirname "$0")/rootfs-mounts.sh"
 
 if [ $# -eq 0 ]; then
-  echo "Usage: mise run app -- <app>[@url] | chromium [url] | lockscreen [used-up|closed|paused]"
+  echo "Usage: mise run app -- <app>[@url] | chromium [url] | lockscreen [used-up|closed|paused|setup]"
   echo "Web apps:"
   grep -l '^X-Lighthouse-Url=' "${root}"/rootfs/usr/share/applications/*.desktop \
     | xargs -n1 basename | sed 's/\.desktop$//; s/^/  /'

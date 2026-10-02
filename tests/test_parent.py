@@ -11,6 +11,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from urllib.parse import urlencode
 
 loader = importlib.machinery.SourceFileLoader("parent", "/usr/bin/lighthouse-parent")
 spec = importlib.util.spec_from_loader("parent", loader)
@@ -204,8 +205,9 @@ class HttpTest(unittest.TestCase):
         (self.tmp / "system").mkdir()
         (self.tmp / "system/pbskids.desktop").write_text(BUILTIN)
         parent.Handler.store = parent.Store(self.tmp / "state", self.tmp / "system")
-        parent.Handler.token = "secret-token"
-        parent.Handler.sessions = set()
+        parent.Handler.store.set_passphrase("purple elephant")
+        parent.Handler.sessions = {}
+        parent.Handler.failures = {}
         self.server = parent.DualStackServer(("::", 0), parent.Handler)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -225,10 +227,14 @@ class HttpTest(unittest.TestCase):
         return self.call("POST", "/api/requests", json.dumps({"app": "pbskids", "url": url}),
                          {"Content-Type": "application/json"})
 
-    def sign_in(self, token="secret-token"):
-        status, headers, _ = self.call("POST", "/login", f"token={token}",
+    def sign_in(self, passphrase="purple elephant"):
+        status, headers, _ = self.call("POST", "/login", urlencode({"passphrase": passphrase}),
                                        {"Content-Type": "application/x-www-form-urlencoded"})
         return status, headers.get("Set-Cookie", "").split(";")[0]
+
+    def kid_post(self, path, data):
+        status, _, body = self.call("POST", path, json.dumps(data), {"Content-Type": "application/json"})
+        return status, json.loads(body)
 
     def test_kid_can_ask_and_check(self):
         status, _, body = self.kid_ask("https://www.youtube.com/")
@@ -278,7 +284,7 @@ class HttpTest(unittest.TestCase):
                                  {"Content-Type": "application/x-www-form-urlencoded"})
         self.assertEqual(status, 415)
 
-    def test_wrong_token_and_no_session_are_refused(self):
+    def test_wrong_passphrase_and_no_session_are_refused(self):
         status, cookie = self.sign_in("wrong")
         self.assertEqual((status, cookie), (401, ""))
         status, headers, _ = self.call("POST", "/apps/pbskids/allow", "domain=example.org",
@@ -286,7 +292,48 @@ class HttpTest(unittest.TestCase):
         self.assertEqual((status, headers.get("Location")), (303, "/"))
         self.assertNotIn("example.org", parent.Handler.store.app("pbskids")["allow"])
         _, _, page = self.call("GET", "/")
-        self.assertIn("Parent code", page)
+        self.assertIn("Parent passphrase", page)
+
+    def test_sign_in_forgives_a_trailing_space(self):
+        self.assertEqual(self.sign_in("purple elephant ")[0], 303)
+
+    def test_too_many_wrong_passphrases_pause_sign_in(self):
+        for _ in range(parent.LOGIN_TRIES):
+            self.assertEqual(self.sign_in("guess")[0], 401)
+        self.assertEqual(self.sign_in()[0], 429)  # even the right one, for a minute
+        parent.Handler.failures.clear()
+        self.assertEqual(self.sign_in()[0], 303)
+
+    def test_changing_the_passphrase_signs_out_other_phones(self):
+        _, phone = self.sign_in()
+        _, laptop = self.sign_in()
+        form = {"Content-Type": "application/x-www-form-urlencoded", "Cookie": phone}
+        _, _, page = self.call("POST", "/passphrase", urlencode(
+            {"current": "wrong", "new": "green giraffe", "repeat": "green giraffe"}), form)
+        self.assertIn("current passphrase isn&#x27;t right", page)
+        _, _, page = self.call("POST", "/passphrase", urlencode(
+            {"current": "purple elephant", "new": "green giraffe", "repeat": "green giraffe"}), form)
+        self.assertIn("Changed the passphrase", page)
+        _, _, page = self.call("GET", "/", headers={"Cookie": phone})
+        self.assertIn("Screen time", page)  # still signed in
+        _, _, page = self.call("GET", "/", headers={"Cookie": laptop})
+        self.assertIn("Sign in", page)
+        self.assertEqual(self.sign_in("purple elephant")[0], 401)
+        self.assertEqual(self.sign_in("green giraffe")[0], 303)
+
+    def test_first_boot_setup(self):
+        parent.Handler.store.passphrase_file.unlink()
+        status, body = self.kid_post("/api/session", {"active": False})
+        self.assertEqual(body["state"], "setup")
+        _, _, page = self.call("GET", "/")
+        self.assertIn("set up yet", page)
+        self.assertEqual(self.sign_in("")[0], 200)  # nothing to sign in with yet
+        self.assertEqual(self.kid_post("/api/setup", {"passphrase": "short"})[0], 400)
+        self.assertEqual(self.kid_post("/api/setup", {"passphrase": "blue whale song"})[0], 201)
+        self.assertEqual(self.kid_post("/api/session", {"active": False})[1]["state"], "open")
+        # Once it's set, the kid side can't change it.
+        self.assertEqual(self.kid_post("/api/setup", {"passphrase": "kid's own choice"})[0], 409)
+        self.assertEqual(self.sign_in("blue whale song")[0], 303)
 
     def test_parent_approves_from_the_dashboard(self):
         _, _, body = self.kid_ask("https://www.youtube.com/<script>alert(1)</script>")
@@ -304,15 +351,22 @@ class HttpTest(unittest.TestCase):
         self.assertIn("youtube.com", parent.Handler.store.app("pbskids")["allow"])
 
 
-class TokenTest(unittest.TestCase):
-    def test_token_file_is_private_and_stable(self):
+class PassphraseTest(unittest.TestCase):
+    def test_passphrase_is_hashed_and_private(self):
         tmp = Path(tempfile.mkdtemp())
         try:
-            parent.STATE = tmp
-            first = parent.ensure_token()
-            self.assertEqual(parent.ensure_token(), first)
-            self.assertEqual(os.stat(tmp / "parent-token").st_mode & 0o777, 0o600)
-            self.assertGreaterEqual(len(first), 20)
+            store = parent.Store(tmp, tmp)
+            self.assertIsNone(store.passphrase())
+            store.set_passphrase("purple elephant")
+            path = tmp / "parent-passphrase"
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            self.assertNotIn("purple", path.read_text())
+            self.assertTrue(store.check_passphrase("purple elephant"))
+            self.assertIsNone(store.check_passphrase("Purple elephant"))
+            with self.assertRaises(FileExistsError):
+                store.set_passphrase("another one", first=True)
+            with self.assertRaises(ValueError):
+                store.set_passphrase("  short  ")
         finally:
             shutil.rmtree(tmp)
 

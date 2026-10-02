@@ -25,6 +25,7 @@ APP_ID = "lighthouse-test"
 ASK_TITLE = "Ask a grown-up · Lighthouse Test"
 TMP = tempfile.mkdtemp()
 PARENT_PORT = 8080
+PASSPHRASE = "integration test"
 
 
 def page(title, script=""):
@@ -105,12 +106,11 @@ class Browser(unittest.TestCase):
 
         env = {**os.environ, "LIGHTHOUSE_STATE_DIR": state, "LIGHTHOUSE_SYSTEM_APPS": system,
                "LIGHTHOUSE_PARENT_PORT": str(PARENT_PORT)}
+        os.makedirs(state)
+        subprocess.run(["lighthouse-parent", "passphrase"], env=env, input=PASSPHRASE, text=True,
+                       check=True, stdout=subprocess.DEVNULL)
         cls.parent = subprocess.Popen(["lighthouse-parent", "serve"], env=env,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        token_file = os.path.join(state, "parent-token")
-        wait_for(lambda: os.path.exists(token_file), timeout=10)
-        with open(token_file) as f:
-            cls.token = f.read().strip()
 
     @classmethod
     def tearDownClass(cls):
@@ -143,6 +143,13 @@ class Browser(unittest.TestCase):
         self.assertIn(f"blocked {blocked_url}", log)
         self.assertNotIn("TARGET blocked.test", titles)
 
+    @staticmethod
+    def sign_in(post):
+        try:
+            return post("/login", f"passphrase={PASSPHRASE}").getheader("Set-Cookie").split(";")[0]
+        except (OSError, AttributeError):  # not listening yet
+            return None
+
     def parent_allows(self, domain):
         """Sign in to lighthouse-parent as a grown-up and allow a domain for the test app."""
         def post(path, body, cookie=""):
@@ -152,7 +159,9 @@ class Browser(unittest.TestCase):
             r = conn.getresponse()
             r.read()
             return r
-        cookie = post("/login", f"token={self.token}").getheader("Set-Cookie").split(";")[0]
+        cookies = []
+        wait_for(lambda: cookies.append(self.sign_in(post)) or cookies[-1], timeout=10)
+        cookie = cookies[-1]
         self.assertEqual(post(f"/apps/{APP_ID}/allow", f"domain={domain}", cookie).status, 200)
 
     # --- lighthouse-webapp ---------------------------------------------------

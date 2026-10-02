@@ -1,10 +1,14 @@
 #!/usr/bin/python3
 """Lighthouse parent service: the kid asks, a grown-up approves.
 
-    lighthouse-parent serve     run the service (lighthouse-parent.service)
-    lighthouse-parent token     print the parent sign-in token (needs sudo)
+    lighthouse-parent serve       run the service (lighthouse-parent.service)
+    lighthouse-parent passphrase  set a new parent passphrase (needs sudo; for
+                                  a forgotten one)
 
-Parents open http://<computer>:8080 and sign in with the token to:
+On first boot the kid's screen shows a setup screen (lighthouse-timekeeper)
+where a grown-up connects to Wi-Fi and chooses the parent passphrase. Until
+then the parent page can't be signed in to. Parents then open
+http://lighthouse.local:8080 (or the computer's address) and sign in to:
   - allow or deny sites the kid asked for (from a web app's "Ask a grown-up")
   - see and change each web app's allowed sites
   - add new web apps
@@ -17,7 +21,9 @@ Kid-side API, accepted only from this computer and only as JSON:
   GET  /api/requests/<id>   -> {"status": "pending" | "approved" | "denied"}
   POST /api/session         {"active": true} every 30 s from lighthouse-timekeeper;
                             counts screen time and returns whether to lock
-                            -> {"state": "open" | "locked", "reason", "remaining", "opens"}
+                            -> {"state": "open" | "locked" | "setup", "reason", "remaining", "opens"}
+  POST /api/setup           {"passphrase": "..."} from the first-boot setup screen;
+                            only works while no passphrase is set
 
 Approved changes are written as desktop entries in
 $STATE/apps/applications/, which lighthouse-webapp and the launcher read
@@ -26,6 +32,8 @@ before the built-in ones in /usr/share/applications.
 
 import configparser
 import datetime
+import getpass
+import hashlib
 import hmac
 import html
 import io
@@ -54,6 +62,9 @@ CLOCK = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
 EXTRA_MINUTES = 15          # what "Ask for more time" asks for
 HEARTBEAT_GAP = 120         # seconds; a longer gap (sleep, crash) isn't counted as screen time
 USAGE_DAYS = 31             # days of screen time history kept
+PASSPHRASE_MIN = 8          # characters
+LOGIN_TRIES = 5             # wrong passphrases in a row before a pause
+LOGIN_PAUSE = 60            # seconds
 NO_LIMITS = {"weekday_minutes": None, "weekend_minutes": None, "opens": None, "closes": None,
              "paused": False, "extra_until": 0}
 
@@ -70,9 +81,31 @@ class Store:
         self.requests_file = self.state / "requests.json"
         self.limits_file = self.state / "limits.json"
         self.usage_file = self.state / "usage.json"
+        self.passphrase_file = passphrase_path(self.state)
         self.lock = threading.Lock()
         self.last_beat = None  # when lighthouse-timekeeper last reported an unlocked screen
         self.parent_apps.mkdir(parents=True, exist_ok=True)
+
+    # Parent passphrase
+
+    def passphrase(self):
+        """The stored passphrase ({"salt", "scrypt"}), or None before setup."""
+        return self._read_json(self.passphrase_file, None)
+
+    def set_passphrase(self, passphrase, first=False):
+        """Save a new passphrase. With first=True, only if none is set (FileExistsError)."""
+        with self.lock:
+            if first and self.passphrase_file.exists():
+                raise FileExistsError("a passphrase is already set")
+            return save_passphrase(self.state, passphrase)
+
+    def check_passphrase(self, passphrase):
+        """The stored passphrase if `passphrase` matches it, else None."""
+        stored = self.passphrase()
+        if stored is None:
+            return None
+        attempt = hash_passphrase(passphrase, bytes.fromhex(stored["salt"]))
+        return stored if hmac.compare_digest(attempt["scrypt"], stored["scrypt"]) else None
 
     # Requests
 
@@ -366,19 +399,35 @@ def host_allowed(host, allow):
     return any(host == d or host.endswith("." + d) for d in allow)
 
 
-# --- token ---------------------------------------------------------------------
+# --- passphrase ------------------------------------------------------------------
 
-def token_path():
-    return STATE / "parent-token"
+def passphrase_path(state):
+    return Path(state) / "parent-passphrase"
 
 
-def ensure_token():
-    path = token_path()
-    if not path.exists():
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(secrets.token_urlsafe(16) + "\n")
-    return path.read_text().strip()
+def hash_passphrase(passphrase, salt=None):
+    # Phones add a trailing space after a suggested word; it's never meant.
+    salt = salt or secrets.token_bytes(16)
+    digest = hashlib.scrypt(passphrase.strip().encode(), salt=salt, n=2**14, r=8, p=1)
+    return {"salt": salt.hex(), "scrypt": digest.hex()}
+
+
+def save_passphrase(state, passphrase):
+    """Hash and store a new passphrase, readable only by the service. Returns the stored record."""
+    if len(passphrase.strip()) < PASSPHRASE_MIN:
+        raise ValueError(f"use at least {PASSPHRASE_MIN} characters")
+    record = hash_passphrase(passphrase)
+    path = passphrase_path(state)
+    tmp = path.with_suffix(".tmp")
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(record, f)
+    if os.geteuid() == 0:  # `sudo lighthouse-parent passphrase`: the service must still read it
+        owner = os.stat(state)
+        os.chown(tmp, owner.st_uid, owner.st_gid)
+    tmp.replace(path)
+    return record
 
 
 # --- web -----------------------------------------------------------------------
@@ -424,8 +473,8 @@ def esc(s):
 
 class Handler(BaseHTTPRequestHandler):
     store = None
-    token = None
-    sessions = set()
+    sessions = {}   # session cookie -> salt of the passphrase it signed in with
+    failures = {}   # client address -> (wrong passphrases in a row, time of the last)
     server_version = "lighthouse-parent"
 
     # plumbing
@@ -467,10 +516,15 @@ class Handler(BaseHTTPRequestHandler):
     def is_local(self):
         return self.client_address[0] in LOCAL_CLIENTS
 
-    def signed_in(self):
+    def session(self):
         cookie = SimpleCookie(self.headers.get("Cookie", ""))
         session = cookie.get("lighthouse_session")
-        return session is not None and session.value in self.sessions
+        return session.value if session else None
+
+    def signed_in(self):
+        # Changing the passphrase signs out everyone who used the old one.
+        stored = self.store.passphrase()
+        return stored is not None and self.sessions.get(self.session()) == stored["salt"]
 
     # routes
 
@@ -492,13 +546,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.kid_request()
         if path == "/api/session":
             return self.kid_session()
+        if path == "/api/setup":
+            return self.kid_setup()
         if path == "/login":
             return self.login()
         if not self.signed_in():
             return self.redirect("/")
         form = self.form()
         try:
-            flash = self.parent_action(path, form)
+            if path == "/passphrase":
+                flash = self.change_passphrase(form)
+            else:
+                flash = self.parent_action(path, form)
         except (KeyError, ValueError) as e:
             flash = f"That didn't work: {e.args[0] if e.args else e}"
         self.send(HTTPStatus.OK, self.dashboard(flash))
@@ -536,16 +595,49 @@ class Handler(BaseHTTPRequestHandler):
     def kid_session(self):
         if (data := self.kid_json()) is None:
             return
-        self.send_json(HTTPStatus.OK, self.store.heartbeat(bool(data.get("active"))))
+        status = self.store.heartbeat(bool(data.get("active")))
+        if self.store.passphrase() is None:  # first boot: a grown-up sets up the computer
+            status = {**status, "state": "setup", "reason": "setup"}
+        self.send_json(HTTPStatus.OK, status)
+
+    def kid_setup(self):
+        if (data := self.kid_json()) is None:
+            return
+        try:
+            self.store.set_passphrase(str(data.get("passphrase", "")), first=True)
+        except FileExistsError:
+            return self.send_json(HTTPStatus.CONFLICT, {"error": "already set up"})
+        except ValueError as e:
+            return self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(e)})
+        self.send_json(HTTPStatus.CREATED, {"status": "ok"})
 
     def login(self):
-        token = self.form().get("token", "").strip()
-        if not hmac.compare_digest(token.encode(), self.token.encode()):
+        if self.store.passphrase() is None:
+            return self.send(HTTPStatus.OK, self.login_page())
+        client, now = self.client_address[0], time.time()
+        tries, last = self.failures.get(client, (0, 0))
+        if tries >= LOGIN_TRIES and now - last < LOGIN_PAUSE:
+            return self.send(HTTPStatus.TOO_MANY_REQUESTS,
+                             self.login_page("Too many tries. Wait a minute, then try again."))
+        stored = self.store.check_passphrase(self.form().get("passphrase", ""))
+        if stored is None:
+            self.failures[client] = (min(tries + 1, LOGIN_TRIES), now)
             time.sleep(1)
-            return self.send(HTTPStatus.UNAUTHORIZED, self.login_page("That code isn't right."))
+            return self.send(HTTPStatus.UNAUTHORIZED, self.login_page("That passphrase isn't right."))
+        self.failures.pop(client, None)
         session = secrets.token_urlsafe(24)
-        self.sessions.add(session)
+        self.sessions[session] = stored["salt"]
         self.redirect("/", [("Set-Cookie", f"lighthouse_session={session}; HttpOnly; SameSite=Strict; Path=/")])
+
+    def change_passphrase(self, form):
+        if self.store.check_passphrase(form.get("current", "")) is None:
+            raise ValueError("the current passphrase isn't right")
+        if form.get("new", "").strip() != form.get("repeat", "").strip():
+            raise ValueError("the new passphrases don't match")
+        stored = self.store.set_passphrase(form.get("new", ""))
+        self.sessions.clear()
+        self.sessions[self.session()] = stored["salt"]
+        return "Changed the passphrase. Other phones will need to sign in again."
 
     def parent_action(self, path, form):
         parts = path.strip("/").split("/")
@@ -602,12 +694,19 @@ class Handler(BaseHTTPRequestHandler):
     # pages
 
     def login_page(self, error=""):
+        if self.store.passphrase() is None:
+            return PAGE.format(body="""
+<h1>Lighthouse for grown-ups</h1>
+<div class="card"><p><strong>This computer isn't set up yet.</strong></p>
+<p>Turn it on and follow the steps on its screen. You'll choose a passphrase there,
+then sign in here with it.</p></div>""")
         return PAGE.format(body=f"""
 <h1>Lighthouse for grown-ups</h1>
 {f'<p class="flash">{esc(error)}</p>' if error else ''}
 <form class="card" method="post" action="/login">
-  <p>Enter the parent code. On the computer, run <code>sudo lighthouse-parent token</code>.</p>
-  <div class="row"><input name="token" autocomplete="current-password" placeholder="Parent code" required>
+  <p>Sign in with the parent passphrase you chose when you set up the computer.</p>
+  <div class="row"><input name="passphrase" type="password" autocomplete="current-password"
+    autocapitalize="none" placeholder="Parent passphrase" required>
   <button>Sign in</button></div>
 </form>""")
 
@@ -672,6 +771,18 @@ class Handler(BaseHTTPRequestHandler):
   <div class="row"><input name="url" placeholder="https://..." required><button>Add</button></div>
   <p class="muted">The app can visit the site you enter. Anything else it links to will show up above as a question.</p>
 </form>""")
+
+        out.append(f"""<h2>Parent passphrase</h2>
+<form class="card" method="post" action="/passphrase">
+  <div class="row"><input name="current" type="password" autocomplete="current-password" autocapitalize="none"
+    placeholder="Current passphrase" required></div>
+  <div class="row"><input name="new" type="password" autocomplete="new-password" autocapitalize="none"
+    minlength="{PASSPHRASE_MIN}" placeholder="New passphrase" required></div>
+  <div class="row"><input name="repeat" type="password" autocomplete="new-password" autocapitalize="none"
+    placeholder="New passphrase again" required><button>Change</button></div>
+  <p class="muted">Forgot it? Whoever looks after the computer can set a new one with
+  <code>sudo lighthouse-parent passphrase</code>.</p>
+</form>""")
         return PAGE.format(body="\n".join(out))
 
     def screen_time_section(self):
@@ -729,25 +840,39 @@ class DualStackServer(ThreadingHTTPServer):
 def serve():
     STATE.mkdir(parents=True, exist_ok=True)
     Handler.store = Store()
-    Handler.token = ensure_token()
+    (STATE / "parent-token").unlink(missing_ok=True)  # the sign-in code before passphrases
+    dev_passphrase = os.environ.get("LIGHTHOUSE_PARENT_DEV_PASSPHRASE")  # mise run parent
+    if dev_passphrase and Handler.store.passphrase() is None:
+        Handler.store.set_passphrase(dev_passphrase)
     server = DualStackServer(("::", PORT), Handler)
     print(f"lighthouse-parent: listening on port {PORT}", file=sys.stderr, flush=True)
-    if os.environ.get("LIGHTHOUSE_PARENT_SHOW_TOKEN"):  # mise run parent
-        print(f"Open http://localhost:{PORT} and sign in with: {Handler.token}", flush=True)
+    if dev_passphrase:
+        print(f"Open http://localhost:{PORT} and sign in with the passphrase: {dev_passphrase}", flush=True)
     server.serve_forever()
+
+
+def set_passphrase_command():
+    if sys.stdin.isatty():
+        passphrase = getpass.getpass("New parent passphrase: ")
+        if passphrase != getpass.getpass("Same passphrase again: "):
+            sys.exit("lighthouse-parent: the passphrases don't match")
+    else:
+        passphrase = sys.stdin.readline()
+    try:
+        save_passphrase(STATE, passphrase)
+    except PermissionError:
+        sys.exit("lighthouse-parent: permission denied (run with sudo)")
+    except ValueError as e:
+        sys.exit(f"lighthouse-parent: {e}")
+    print("Saved. Phones signed in with the old passphrase need to sign in again.")
 
 
 def main():
     command = sys.argv[1:2]
     if command == ["serve"]:
         serve()
-    elif command == ["token"]:
-        try:
-            print(token_path().read_text().strip())
-        except PermissionError:
-            sys.exit("lighthouse-parent: permission denied (run with sudo)")
-        except FileNotFoundError:
-            sys.exit("lighthouse-parent: no token yet (is lighthouse-parent.service running?)")
+    elif command == ["passphrase"]:
+        set_passphrase_command()
     else:
         sys.exit(__doc__.strip())
 

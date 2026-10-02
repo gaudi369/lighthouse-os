@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import vmctl  # noqa: E402
 
 WEB_PORT = vmctl.WEB_PORT
+PASSPHRASE = "lighthouse vm test"
 
 
 def wait_for(check, timeout, message, interval=2):
@@ -63,13 +64,17 @@ class Kid:
 
 
 class Parent:
-    """The parent page, signed in with the parent code."""
+    """The parent page, signed in with the parent passphrase."""
 
-    def __init__(self):
-        token = vmctl.ssh("sudo lighthouse-parent token").strip()
-        status, headers, _ = self.call("POST", "/login", {"token": token}, cookie=None)
+    def __init__(self, passphrase=PASSPHRASE):
+        status, headers, _ = self.call("POST", "/login", {"passphrase": passphrase}, cookie=None)
         assert status == 303, f"sign-in failed ({status})"
         self.cookie = headers["Set-Cookie"].split(";")[0]
+
+    @staticmethod
+    def set_passphrase(passphrase=PASSPHRASE):
+        """What whoever looks after the computer does over SSH (also skips first-boot setup)."""
+        vmctl.ssh("sudo lighthouse-parent passphrase", input=passphrase + "\n")
 
     def call(self, method, path, form=None, cookie=""):
         conn = http.client.HTTPConnection("127.0.0.1", WEB_PORT, timeout=10)
@@ -98,6 +103,7 @@ class VM(unittest.TestCase):
     def setUpClass(cls):
         vmctl.wait_ssh()
         cls.kid = Kid()
+        Parent.set_passphrase()
         cls.parent = Parent()
         cls.parent.clear_screen_time()
         cls.kid.close_all_windows()
@@ -232,6 +238,48 @@ class VM(unittest.TestCase):
         since = time.time()
         self.parent.post("/time/unlock")
         self.wait_log(since, r"unlocking")
+
+    # --- first boot ----------------------------------------------------------
+
+    def test_11_first_boot_setup(self):
+        self.assertEqual(vmctl.ssh("hostnamectl hostname").strip(), "lighthouse")
+        self.parent.clear_screen_time()
+        since = time.time()
+        vmctl.ssh("sudo rm /var/lib/lighthouse/parent-passphrase")
+        try:
+            self.wait_log(since, r"locking \(setup\)")
+            time.sleep(2)
+            vmctl.shot("11-setup-welcome")
+            self.assertIn("set up yet", self.parent.page())
+            # Only the computer itself can choose the first passphrase, not the network.
+            status, _, _ = self.parent.call("POST", "/api/setup", cookie=None)
+            self.assertEqual(status, 403)
+
+            vmctl.key("ret")  # Start
+            time.sleep(3)
+            vmctl.shot("11-setup-wifi")  # the VM is wired, so this says it's connected
+            vmctl.key("ret")  # Next
+            time.sleep(2)
+            vmctl.type_text("short")
+            vmctl.key("ret")
+            vmctl.type_text("short")
+            vmctl.key("ret")
+            time.sleep(1)
+            vmctl.shot("11-setup-too-short")
+            vmctl.type_text("green giraffe")  # the boxes are cleared, ready to try again
+            vmctl.key("ret")
+            vmctl.type_text("green giraffe")
+            vmctl.key("ret")
+            self.wait_log(since, r"setup: parent passphrase saved", timeout=10)
+            time.sleep(2)
+            vmctl.shot("11-setup-done")
+            since = time.time()
+            vmctl.key("ret")  # Start using Lighthouse
+            self.wait_log(since, r"unlocking", timeout=10)
+            Parent("green giraffe")
+        finally:
+            Parent.set_passphrase()
+            type(self).parent = Parent()
 
 
 if __name__ == "__main__":

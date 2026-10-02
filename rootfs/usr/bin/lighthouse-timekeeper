@@ -10,22 +10,30 @@ input, and stays locked even if this program dies. The lock screen says why
 for more time, and can turn the computer off. It unlocks when lighthouse-parent
 says the computer is open again.
 
+On first boot (no parent passphrase yet) the lock shows the setup screen
+instead: a grown-up connects to Wi-Fi, chooses the parent passphrase, and is
+shown the address of the parent page.
+
 If lighthouse-parent can't be reached, the computer stays open: a broken
 service must not shut a kid out.
 
     lighthouse-timekeeper              run (spawned by niri at startup)
     lighthouse-timekeeper --preview R  show the lock screen for reason R
-                                       (used-up, closed, paused) in a normal window
+                                       (used-up, closed, paused, setup) in a
+                                       normal window; setup doesn't save anything
 """
 
 import argparse
 import datetime
 import json
 import os
+import socket
 import subprocess
 import sys
 import syslog
+import traceback
 import urllib.request
+from urllib.error import HTTPError
 from urllib.parse import quote
 
 PARENT_URL = os.environ.get("LIGHTHOUSE_PARENT_URL", "http://127.0.0.1:8080")
@@ -33,6 +41,8 @@ THEME = "/etc/lighthouse/theme/theme.json"
 LAYER_SHELL = "/usr/lib64/libgtk4-layer-shell.so.0"
 INTERVAL = 30            # seconds between reports
 WARNINGS = (5 * 60, 60)  # warn when this many seconds are left
+PASSPHRASE_MIN = 8       # as in lighthouse-parent
+PARENT_PORT = 8080
 
 DEFAULT_COLORS = {"surface": "#F7F9F4", "on_surface": "#1C2733", "surface_variant": "#E2EBF3",
                   "on_surface_variant": "#27384A", "primary": "#2A64A8", "on_primary": "#FFFFFF",
@@ -46,6 +56,66 @@ def post(path, body):
         with urllib.request.urlopen(req, timeout=3) as r:
             return json.load(r)
     except (OSError, ValueError):
+        return None
+
+
+def save_passphrase(passphrase):
+    """POST /api/setup: None when saved (or already set), else what went wrong."""
+    req = urllib.request.Request(f"{PARENT_URL}/api/setup", data=json.dumps({"passphrase": passphrase}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            return None
+    except HTTPError as e:
+        if e.code == 409:
+            return None
+        try:
+            return json.load(e).get("error", "it didn't work")
+        except ValueError:
+            return "it didn't work"
+    except OSError:
+        return "couldn't reach the parent service"
+
+
+def split_terse(line):
+    """Split a line of `nmcli -t` output: fields are separated by ':', with '\\:' and '\\\\' escaped."""
+    fields, field, chars = [], "", iter(line)
+    for ch in chars:
+        if ch == "\\":
+            field += next(chars, "")
+        elif ch == ":":
+            fields.append(field)
+            field = ""
+        else:
+            field += ch
+    return fields + [field]
+
+
+def parse_wifi_list(output):
+    """Networks from `nmcli -t -f IN-USE,SIGNAL,SECURITY,SSID dev wifi list`, strongest first,
+    one per name: [{"ssid", "signal", "secure", "in_use"}]."""
+    networks = {}
+    for line in output.splitlines():
+        fields = split_terse(line)
+        if len(fields) != 4 or not fields[3]:
+            continue  # hidden networks have no name to pick
+        in_use, signal, security, ssid = fields
+        net = {"ssid": ssid, "signal": int(signal) if signal.isdigit() else 0,
+               "secure": security not in ("", "--"), "in_use": in_use.strip() == "*"}
+        if ssid not in networks or net["signal"] > networks[ssid]["signal"]:
+            net["in_use"] = net["in_use"] or networks.get(ssid, {}).get("in_use", False)
+            networks[ssid] = net
+    return sorted(networks.values(), key=lambda n: (not n["in_use"], -n["signal"]))
+
+
+def local_address():
+    """This computer's address on the local network (no packets are sent), or None."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))
+            address = s.getsockname()[0]
+            return None if address.startswith("127.") else address
+    except OSError:
         return None
 
 
@@ -65,6 +135,8 @@ def lock_text(status):
         return "🌙", "The computer is resting", f"It opens again at {opens}." if opens else ""
     if reason == "paused":
         return "🙂", "A grown-up paused the computer", "It opens again when they unlock it."
+    if reason == "setup":
+        return "👋", "Setting up Lighthouse", "A grown-up is setting up this computer on the other screen."
     return "⏰", "That's all the screen time for today", "You can play again tomorrow."
 
 
@@ -91,13 +163,19 @@ CSS = """
        background: {primary}; color: {on_primary}; }}
 .quiet {{ font-size: 16px; border-radius: 999px; padding: 8px 20px;
          background: {surface_variant}; color: {on_surface_variant}; }}
+.setup {{ font-size: 18px; }}
+.setup entry {{ font-size: 20px; min-height: 44px; min-width: 420px; }}
+.setup list {{ background: {surface_variant}; border-radius: 14px; }}
+.setup list row {{ padding: 10px 16px; color: {on_surface}; }}
+.address {{ font-size: 26px; font-weight: 800; color: {primary}; }}
+.error {{ font-size: 18px; color: #B3261E; }}
 button:focus-visible {{ outline: 4px solid {secondary}; outline-offset: 3px; }}
 """
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--preview", choices=("used-up", "closed", "paused"))
+    parser.add_argument("--preview", choices=("used-up", "closed", "paused", "setup"))
     args = parser.parse_args()
 
     # gtk4-layer-shell must load before libwayland, which Python can't arrange by itself.
@@ -112,7 +190,8 @@ def main():
 
     app = Gtk.Application(application_id="org.lighthouse.Timekeeper",
                           flags=Gio.ApplicationFlags.NON_UNIQUE)
-    state = {"status": {"state": "open"}, "warned": set(), "request": None, "screens": []}
+    state = {"status": {"state": "open"}, "warned": set(), "request": None, "screens": [],
+             "setup": None}  # the setup screen while it's showing: None, "showing" or "finished"
     lock = None if args.preview else Gtk4SessionLock.Instance.new()
 
     # niri discards the output of what it spawns, so log to the journal too.
@@ -121,6 +200,12 @@ def main():
     def log(message):
         print(f"lighthouse-timekeeper: {message}", file=sys.stderr, flush=True)
         syslog.syslog(message)
+
+    def log_error(kind, value, tb):
+        sys.__excepthook__(kind, value, tb)
+        for line in "".join(traceback.format_exception(kind, value, tb)).splitlines():
+            syslog.syslog(syslog.LOG_ERR, line)
+    sys.excepthook = log_error  # errors in GTK callbacks end up here
 
     def notify(body):
         try:
@@ -183,16 +268,229 @@ def main():
             widgets["note"].set_label(note)
             widgets["note"].set_visible(can_ask and bool(note))
 
+    def fit(child):
+        """A lock surface must be exactly the monitor's size (a bigger one is a protocol error
+        that kills this program), so the contents scroll rather than grow the window."""
+        return Gtk.ScrolledWindow(child=child, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+                                  vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
+
     def on_monitor(_lock, monitor):
         window = Gtk.Window(css_classes=["lock"])
+        if state["status"].get("state") == "setup" and state["setup"] is None:
+            state["setup"] = "showing"
+            window.set_child(fit(build_setup(finish_setup)))
+            window.connect("destroy", lambda _w: state.update(setup=None))
+            lock.assign_window_to_monitor(window, monitor)
+            window.present()
+            return
         box, widgets = build_screen()
-        window.set_child(box)
+        window.set_child(fit(box))
         state["screens"].append(widgets)
         window.connect("destroy", lambda _w: state["screens"].remove(widgets))
         lock.assign_window_to_monitor(window, monitor)
         window.present()
         refresh_screens()
         widgets["ask"].grab_focus()  # Enter asks
+
+    # First-boot setup: Wi-Fi, the parent passphrase, then where the parent page is.
+
+    def nmcli(args, done):
+        """Run nmcli without blocking the screen; done(ok, stdout, stderr)."""
+        proc = Gio.Subprocess.new(["nmcli", *args],
+                                  Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+
+        def finished(p, result):
+            try:
+                _ok, out, err = p.communicate_utf8_finish(result)
+            except GLib.Error as e:
+                return done(False, "", e.message)
+            done(p.get_successful(), out or "", err or "")
+        proc.communicate_utf8_async(None, None, finished)
+
+    def page_url():
+        """The parent page's address(es) for a phone on the same network."""
+        urls = []
+        try:
+            avahi = Gio.DBusProxy.new_for_bus_sync(
+                Gio.BusType.SYSTEM, Gio.DBusProxyFlags.NONE, None, "org.freedesktop.Avahi", "/",
+                "org.freedesktop.Avahi.Server", None)
+            urls.append(f"http://{avahi.call_sync('GetHostNameFqdn', None, Gio.DBusCallFlags.NONE, 3000, None).unpack()[0]}:{PARENT_PORT}")
+        except GLib.Error:
+            pass
+        if address := local_address():
+            urls.append(f"http://{address}:{PARENT_PORT}")
+        return urls or [f"http://lighthouse.local:{PARENT_PORT}"]
+
+    def build_setup(on_finish):
+        stack = Gtk.Stack(css_classes=["setup"], transition_type=Gtk.StackTransitionType.SLIDE_LEFT,
+                          halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, vhomogeneous=False)
+
+        def page(name, emoji, title, detail):
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, halign=Gtk.Align.CENTER)
+            for text, css in ((emoji, "big"), (title, "title"), (detail, "detail")):
+                box.append(Gtk.Label(label=text, css_classes=[css], wrap=True, max_width_chars=48,
+                                     justify=Gtk.Justification.CENTER))
+            stack.add_named(box, name)
+            return box
+
+        def button(label, on_click, quiet=False):
+            b = Gtk.Button(label=label, css_classes=["quiet" if quiet else "ask"], halign=Gtk.Align.CENTER)
+            b.connect("clicked", lambda _b: on_click())
+            return b
+
+        def show(name, focus=None):
+            stack.set_visible_child_name(name)
+            if focus:
+                focus.grab_focus()
+
+        # 1. Welcome
+        welcome = page("welcome", "👋", "Welcome to Lighthouse!",
+                       "A grown-up needs to set up this computer first. It takes two minutes.")
+        start = button("Start", lambda: show_wifi())
+        welcome.append(start)
+
+        # 2. Wi-Fi
+        wifi = page("wifi", "📶", "Connect to the internet", "")
+        wifi_note = wifi.get_last_child()
+        networks = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        scroller = Gtk.ScrolledWindow(child=networks, min_content_height=220, max_content_height=320,
+                                      propagate_natural_height=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        password = Gtk.PasswordEntry(show_peek_icon=True, placeholder_text="Wi-Fi password", visible=False)
+        wifi_error = Gtk.Label(css_classes=["error"], wrap=True, visible=False)
+        connect = button("Connect", lambda: connect_wifi())
+        wifi_next = button("Next", lambda: show("passphrase", first))
+        wifi_skip = button("Skip for now", lambda: show("passphrase", first), quiet=True)
+        for w in (scroller, password, wifi_error, connect, wifi_next, wifi_skip):
+            wifi.append(w)
+        password.connect("activate", lambda _e: connect_wifi())
+
+        def wifi_state(note, listing=False, chosen=None, error="", online=False):
+            wifi_note.set_label(note)
+            scroller.set_visible(listing)
+            password.set_visible(bool(chosen and chosen["secure"]))
+            connect.set_visible(bool(chosen))
+            wifi_error.set_label(error)
+            wifi_error.set_visible(bool(error))
+            wifi_next.set_visible(online)
+            wifi_skip.set_visible(not online)
+
+        def show_wifi():
+            show("wifi")
+            wifi_state("Checking the connection…")
+            nmcli(["-t", "-g", "CONNECTIVITY", "general"], lambda ok, out, _e: (
+                wifi_online() if ok and out.strip() == "full" else scan()))
+
+        def wifi_online():
+            wifi_state("✅ This computer is connected to the internet.", online=True)
+            wifi_next.grab_focus()
+
+        def scan():
+            wifi_state("Looking for Wi-Fi networks…")
+            nmcli(["-t", "-f", "IN-USE,SIGNAL,SECURITY,SSID", "dev", "wifi", "list", "--rescan", "yes"], listed)
+
+        def listed(ok, out, _err):
+            found = parse_wifi_list(out) if ok else []
+            if not found:
+                return wifi_state("No Wi-Fi networks found. You can plug in a network cable, "
+                                  "or skip this and connect later.")
+            while (row := networks.get_row_at_index(0)) is not None:
+                networks.remove(row)
+            for net in found:
+                label = Gtk.Label(label=f"{'🔒 ' if net['secure'] else ''}{net['ssid']}", xalign=0)
+                row = Gtk.ListBoxRow(child=label)
+                row.network = net
+                networks.append(row)
+            wifi_state("Pick your Wi-Fi network.", listing=True)
+
+        def chosen():
+            row = networks.get_selected_row()
+            return row.network if row else None
+
+        def on_pick(_list, row):
+            if row is None:
+                return
+            wifi_state("Pick your Wi-Fi network.", listing=True, chosen=row.network)
+            (password if row.network["secure"] else connect).grab_focus()
+        networks.connect("row-selected", on_pick)
+
+        def connect_wifi():
+            net = chosen()
+            if net is None:
+                return
+            args = ["dev", "wifi", "connect", net["ssid"]]
+            if net["secure"]:
+                args += ["password", password.get_text()]
+            wifi_state(f"Connecting to {net['ssid']}…", listing=True)
+            if args_preview():
+                return GLib.timeout_add_seconds(1, lambda: wifi_online() and False)
+
+            def connected(ok, _out, err):
+                if ok:
+                    log("setup: connected to Wi-Fi")
+                    return wifi_online()
+                log(f"setup: couldn't connect to Wi-Fi: {err.strip()}")
+                wifi_state("Pick your Wi-Fi network.", listing=True, chosen=net,
+                           error="Couldn't connect. Check the password and try again.")
+            nmcli(args, connected)
+
+        # 3. The parent passphrase
+        pick = page("passphrase", "🔑", "Choose a parent passphrase",
+                    "You'll use it to sign in to Lighthouse from your phone: to answer questions, "
+                    "set screen time and add apps. Use a few words that are easy for you to "
+                    "remember and hard for a kid to guess.")
+        first = Gtk.PasswordEntry(show_peek_icon=True, placeholder_text="Passphrase")
+        again = Gtk.PasswordEntry(show_peek_icon=True, placeholder_text="Same passphrase again")
+        pick_error = Gtk.Label(css_classes=["error"], wrap=True, visible=False)
+        save = button("Save", lambda: save_it())
+        for w in (first, again, pick_error, save):
+            pick.append(w)
+        first.connect("activate", lambda _e: again.grab_focus())
+        again.connect("activate", lambda _e: save_it())
+
+        def save_it():
+            text = first.get_text().strip()
+            if len(text) < PASSPHRASE_MIN:
+                error = f"Use at least {PASSPHRASE_MIN} characters. A few words work well."
+            elif text != again.get_text().strip():
+                error = "The two don't match. Type it again."
+            else:
+                error = None if args_preview() else save_passphrase(text)
+            if error:
+                pick_error.set_label(error[:1].upper() + error[1:])
+                pick_error.set_visible(True)
+                first.set_text("")
+                again.set_text("")
+                first.grab_focus()
+                return
+            log("setup: parent passphrase saved")
+            urls = page_url()
+            address.set_label(urls[0])
+            other.set_label(f"If that doesn't open, try {urls[1]}" if len(urls) > 1 else "")
+            other.set_visible(len(urls) > 1)
+            show("done", finish)
+
+        # 4. Done
+        done = page("done", "✅", "All set!",
+                    "To look after Lighthouse from your phone, join the same Wi-Fi and open:")
+        address = Gtk.Label(css_classes=["address"])
+        other = Gtk.Label(css_classes=["detail"], wrap=True)
+        finish = button("Start using Lighthouse", on_finish)
+        for w in (address, other, Gtk.Label(label="Sign in with your passphrase. Bookmark the page "
+                                            "so it's easy to find.", css_classes=["detail"], wrap=True),
+                  finish):
+            done.append(w)
+
+        show("welcome", start)
+        return stack
+
+    def args_preview():
+        return args.preview is not None
+
+    def finish_setup():
+        if args.preview:
+            return app.quit()
+        state["setup"] = "finished"
+        tick()
 
     def ask_for_time():
         r = None if args.preview else post("/api/requests", {"kind": "time"})
@@ -212,13 +510,18 @@ def main():
             return GLib.SOURCE_CONTINUE
         state["status"] = status
 
-        if status["state"] == "locked" and not locked:
+        showing_setup = state["setup"] is not None
+        if status["state"] in ("locked", "setup") and not locked:
             log(f"locking ({status.get('reason')})")
             state["request"] = None
             lock.lock()
-        elif status["state"] == "open" and locked:
+        elif locked and showing_setup and state["setup"] != "finished" and status["state"] == "open":
+            pass  # the passphrase is saved; wait for "Start using Lighthouse"
+        elif locked and (status["state"] == "open" or showing_setup != (status["state"] == "setup")):
+            # Open again, or the lock is showing the wrong screen (the next report locks again).
             log("unlocking")
             lock.unlock()
+            state["setup"] = None
             state["warned"].clear()
         elif locked and state["request"] == "pending" and state.get("request_id"):
             if request_status(state["request_id"]) == "denied":
@@ -246,10 +549,13 @@ def main():
         if args.preview:
             state["status"] = {"state": "locked", "reason": args.preview, "opens": "07:00"}
             window = Gtk.ApplicationWindow(application=app, css_classes=["lock"], title="Lock screen preview")
-            box, widgets = build_screen()
-            window.set_child(box)
-            state["screens"].append(widgets)
-            refresh_screens()
+            if args.preview == "setup":
+                window.set_child(build_setup(finish_setup))
+            else:
+                box, widgets = build_screen()
+                window.set_child(box)
+                state["screens"].append(widgets)
+                refresh_screens()
             window.present()
             return
         if not Gtk4SessionLock.is_supported():

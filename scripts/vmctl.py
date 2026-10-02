@@ -246,7 +246,7 @@ def key(combo, hold_ms=100):
         part = ALIASES.get(part, part)
         keys += part.split("-")
     qmp("send-key", keys=[{"type": "qcode", "data": k} for k in keys], **{"hold-time": hold_ms})
-    time.sleep(0.05)
+    time.sleep(hold_ms / 1000 + 0.05)  # let go before the next key, or keys overlap and get lost
 
 
 def type_text(text):

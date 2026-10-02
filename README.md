@@ -131,9 +131,28 @@ allows `set`, and refuses it while a parent has locked the theme.
 
 ### For parents
 
-Open `http://<computer>:8080` from a phone or laptop on the same network
-(`http://localhost:8080` for the VM) and sign in with the parent code from
-`sudo lighthouse-parent token`. The page shows:
+#### First boot
+
+The first time it starts, the computer shows a setup screen instead of the
+desktop, and nothing else can be used until a grown-up finishes it:
+
+1. **Connect to the internet**: pick a Wi-Fi network and type its password
+   (skipped when the computer is already online, e.g. with a cable).
+2. **Choose a parent passphrase**: at least 8 characters; a few words work well.
+3. **All set**: the screen shows the parent page's address, normally
+   `http://lighthouse.local:8080`, plus the computer's IP address in case a
+   phone can't find `.local` names.
+
+The parent page can't be signed in to until this is done. Only the computer
+itself can choose the first passphrase; the network can't.
+
+#### The parent page
+
+Open `http://lighthouse.local:8080` (or `http://<computer's address>:8080`) from
+a phone or laptop on the same network and sign in with the parent passphrase.
+For the VM, use `http://localhost:8080`; to try it from a phone, allow port 8080
+through your computer's firewall (Omarchy: `sudo ufw allow from 192.168.1.0/24
+to any port 8080 proto tcp`) and use the computer's address. The page shows:
 
 - **Asking to visit**: each site the kid asked for, with **Allow** (the
   site's domain, without `www.`) or **Not now**.
@@ -142,8 +161,13 @@ Open `http://<computer>:8080` from a phone or laptop on the same network
   launcher straight away.
 
 The kid-side API only accepts JSON from the computer itself; everything
-else needs the parent code. It is plain HTTP on the local network for now
-(Tailscale comes later), so use it on a network you trust.
+else needs the parent passphrase. Five wrong passphrases in a row pause
+sign-in from that device for a minute. The passphrase is stored hashed
+(scrypt) in `/var/lib/lighthouse/parent-passphrase`. It is plain HTTP on the
+local network for now (Tailscale comes later), so use it on a network you trust.
+
+- **Parent passphrase**: change it (other signed-in phones are signed out). A
+  forgotten one can be replaced over SSH with `sudo lighthouse-parent passphrase`.
 
 - **Screen time**: a daily limit for school days and for weekends, the hours
   the computer is open, **Give 15/30 more minutes**, and **Lock now**. Empty
@@ -189,7 +213,7 @@ Over SSH as `admin` (`mise run ssh` for the VM):
 | `lighthouse-theme list` | Show themes; `*` marks the current one |
 | `sudo lighthouse-theme set <id>` | Switch the theme (works even when locked) |
 | `sudo lighthouse-theme lock` / `unlock` | Stop or allow the kid changing it |
-| `sudo lighthouse-parent token` | Show the parent code for the web page |
+| `sudo lighthouse-parent passphrase` | Set a new parent passphrase (a forgotten one; also skips first-boot setup) |
 
 ## Development
 
@@ -199,7 +223,7 @@ Most work doesn't need a VM. Pick the fastest loop that covers your change:
 |---|---|---|
 | `mise run build` | Build the container image | Package changes |
 | `mise run check` | Validate niri and Noctalia config, Chromium policy, desktop entries and themes; unit tests for the web app allowlist and link routing, `lighthouse-theme` and `lighthouse-parent` (including screen time) | Every change |
-| `mise run app -- pbskids` | Open one app in a normal window on your desktop; blocked navigations print in the terminal. Also `pbskids@<url>`, `chromium [url]` (kid policy, with an address bar), `lockscreen [used-up\|closed\|paused]` (the screen time lock screen in a window), or any desktop entry like `tuxpaint` | Trying and exploring apps |
+| `mise run app -- pbskids` | Open one app in a normal window on your desktop; blocked navigations print in the terminal. Also `pbskids@<url>`, `chromium [url]` (kid policy, with an address bar), `lockscreen [used-up\|closed\|paused\|setup]` (the screen time lock screen, or the first-boot setup screen, in a window), or any desktop entry like `tuxpaint` | Trying and exploring apps |
 | `mise run parent` | Run the parent service on your computer (state in `build/parent-state`); open http://localhost:8080 with the printed code. `mise run app` in another terminal talks to it, so you can ask and approve end to end | Parent page and the ask flow |
 | `mise run dev` | Run the whole kid session in a window on your desktop | Shell, keybindings, layout |
 | `mise run test` | Browser tests, headless and offline: allowlist (navigation, redirects, frames, lookalike domains, file URLs, downloads), the ask page, a parent approving through the real service, and the Chromium policy. Saves `build/shots/ask-a-grown-up.png` | Web app, parent or policy changes |
@@ -228,7 +252,7 @@ any of them. `IMAGE_TAG=<tag>` builds or uses a different image tag.
 | Anything | `mise run check` first (seconds) |
 | A web app, its allowlist, or `lighthouse-webapp` | `mise run app -- <id>` to click around, then `mise run test` |
 | The ask flow or the parent page | `mise run parent` + `mise run app -- <id>`, then `mise run check` and `mise run test` |
-| Screen time or the lock screen | `mise run check`; `mise run app -- lockscreen` for the look; `mise run vm-test -- -k time` to see it lock and unlock |
+| Screen time, the lock screen or first-boot setup | `mise run check`; `mise run app -- lockscreen [setup]` for the look; `mise run vm-test -- -k time` (or `-k setup`) to see it in the VM |
 | A theme | `LIGHTHOUSE_THEME=<id> mise run app -- pbskids`, then `mise run themes` |
 | niri config, shortcuts, the bar or launcher | `mise run dev` (Mod is Alt there), or `mise run shot` without a window |
 | Packages in the `Containerfile` | `mise run build`, then any of the above |
@@ -249,8 +273,8 @@ a laptop you intend to wipe. It installs `kid` (autologin) and `admin`
 | 1. One scrolling strip | niri strip, full-width apps, Mod+R half width, shortcuts overlay, no terminal or general browser in the launcher; Noctalia settings, lock and log out out of reach; hot corners off | Keep kids to one workspace (niri still has vertical workspace swipes); check touchpad gestures on real hardware; a friendlier launcher |
 | 2. Web sites are apps | `lighthouse-webapp` on Blink with per-app allowlists, storage and window ids; toolbar; "Ask a grown-up" page for blocked links; offline tests | Launcher icons (once the app list is decided); one window per app (opening twice gives two); video playback checked |
 | 3. Fully themeable | Eight themes with contrast checks; bar, focus ring, wallpaper, web app toolbars and picker follow the theme; kid picker with parent lock | Theme GTK/Qt apps (Tux Paint, GCompris, dialogs); confirm live switching in the VM |
-| 4. Parent control plane | Parent web page: approve or deny the kid's requests, edit each app's allowed sites, add web apps; screen time (daily limits, open hours, more time, lock now) with a kid lock screen that can ask for more; parent code sign-in; commands over SSH | Activity (which apps, for how long; the per-day usage is already kept in `usage.json`); notifying parents of new requests; Tailscale setup flow (and serving only on Tailscale); HTTPS |
-| 5. Works out of the box | Immutable bootc image, autologin, no admin rights for the kid, laptop hardware support, unattended installer | Publish the image to a registry and turn on automatic updates; real-hardware testing; a first-boot setup for the parent (admin key, Wi-Fi, Tailscale) instead of the dev SSH key |
+| 4. Parent control plane | Parent web page: approve or deny the kid's requests, edit each app's allowed sites, add web apps; screen time (daily limits, open hours, more time, lock now) with a kid lock screen that can ask for more; parent passphrase chosen at first boot; commands over SSH | Activity (which apps, for how long; the per-day usage is already kept in `usage.json`); notifying parents of new requests; Tailscale setup flow (and serving only on Tailscale); HTTPS |
+| 5. Works out of the box | Immutable bootc image, autologin, no admin rights for the kid, laptop hardware support, unattended installer | Publish the image to a registry and turn on automatic updates; real-hardware testing; first-boot setup: Wi-Fi and the parent passphrase are done, the admin SSH key (still the dev key) and Tailscale aren't |
 
 Known issues and open questions:
 
@@ -265,6 +289,13 @@ Known issues and open questions:
   app ever gains one, that is a way in.
 - Flatpak is installed with no remotes, for later. Nothing the kid can reach
   runs it.
+- The first-boot Wi-Fi step hasn't been tried on real Wi-Fi yet (the VMs are
+  wired). It connects with `nmcli` from the kid's session, which a polkit rule
+  allows (`50-lighthouse-wifi.rules`); after setup the kid has no screen that
+  uses it. There is no way to change Wi-Fi later without SSH yet.
+- If the kid's session ever ends (niri crashes), greetd shows a text login
+  prompt rather than logging the kid back in. The kid's account has no
+  password, so it goes nowhere, but the kid is stuck until a restart.
 
 - The disk build used to print `blueprint validation failed ...
   customizations.filesystem` (an `fstype` key the builder doesn't accept);
